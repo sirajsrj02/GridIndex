@@ -1,6 +1,6 @@
 'use strict';
 
-const { query } = require('../../../src/config/database');
+const { query } = require('../../config/database');
 
 /**
  * Upsert a single normalized energy_prices row.
