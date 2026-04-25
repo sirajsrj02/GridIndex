@@ -4,11 +4,13 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../.env') }
 
 const logger = require('../config/logger').forJob('pollCAISO');
 const { clients, sleep } = require('../utils/httpClient');
+const { parseEIAPeriod, eiaParams } = require('../utils/eiaHelpers');
 const { normalizeEnergyPrice, normalizeFuelMix, normalizeCarbonIntensity } = require('../services/priceNormalizer');
 const { upsertEnergyPrice, upsertFuelMix, upsertCarbonIntensity } = require('../db/queries/prices');
 const { markHealthSuccess, markHealthFailure } = require('../db/queries/health');
 
 const EIA_KEY = process.env.EIA_API_KEY;
+if (!EIA_KEY) throw new Error('EIA_API_KEY environment variable is required');
 
 const EIA_FUEL_MAP = {
   'NG': 'natural_gas', 'COL': 'coal', 'NUC': 'nuclear',
@@ -17,32 +19,15 @@ const EIA_FUEL_MAP = {
   'BIO': 'other_renewables', 'WAS': 'other'
 };
 
-function parseEIAPeriod(period) {
-  if (!period) return null;
-  const s = String(period).trim();
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(s)) return new Date(`${s}:00:00Z`);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T00:00:00Z`);
-  if (/^\d{4}-\d{2}$/.test(s)) return new Date(`${s}-01T00:00:00Z`);
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-function eiaParams(base) {
-  const parts = [];
-  for (const [rawKey, val] of Object.entries(base)) {
-    const key = rawKey.endsWith('[]') ? rawKey.slice(0, -2) : rawKey;
-    if (Array.isArray(val)) {
-      val.forEach((v, i) => parts.push(`${key}[${i}]=${encodeURIComponent(v)}`));
-    } else {
-      parts.push(`${key}=${encodeURIComponent(val)}`);
-    }
+async function safeMarkFailure(source, message) {
+  try { await markHealthFailure(source, message); } catch (e) {
+    logger.warn(`Could not update health for ${source}`, { error: e.message });
   }
-  return parts.join('&');
 }
 
 /**
  * Pull CAISO demand and net generation from EIA (CAL respondent code).
- * EIA ingests CAISO data and republishes it — reliable and no auth quirks.
+ * EIA ingests CAISO data hourly — reliable, no auth quirks.
  */
 async function pollDemandFromEIA() {
   const start = Date.now();
@@ -65,7 +50,7 @@ async function pollDemandFromEIA() {
     const records = response.data?.response?.data || [];
     logger.info(`CAISO via EIA: received ${records.length} records`);
 
-    // Track latest timestamp seen per type to report the most recent values
+    // Track the most recent value per type by explicit timestamp comparison
     const latestByType = {};
 
     for (const rec of records) {
@@ -74,15 +59,12 @@ async function pollDemandFromEIA() {
       const val = parseFloat(rec.value);
       if (isNaN(val)) continue;
 
-      // Records arrive newest-first — capture the most recent value per type
       if (!latestByType[rec.type] || ts > latestByType[rec.type].ts) {
         latestByType[rec.type] = { ts, val };
       }
 
       await upsertEnergyPrice(normalizeEnergyPrice({
-        regionCode: 'CAISO',
-        timestamp: ts,
-        pricePerMwh: null,
+        regionCode: 'CAISO', timestamp: ts, pricePerMwh: null,
         priceType: 'real_time_hourly',
         pricingNode: `EIA_CAL_${rec.type}`,
         demandMw: rec.type === 'D' ? val : null,
@@ -93,14 +75,16 @@ async function pollDemandFromEIA() {
 
     const demandMw = latestByType['D']?.val ?? null;
     const netGenMw = latestByType['NG']?.val ?? null;
-
     const elapsed = Date.now() - start;
-    await markHealthSuccess('CAISO', elapsed);
+
+    try { await markHealthSuccess('CAISO', elapsed); } catch (e) {
+      logger.warn('Could not update CAISO health', { error: e.message });
+    }
     logger.info(`CAISO demand: load=${demandMw}MW, netGen=${netGenMw}MW (${elapsed}ms)`);
     return { demandMw, netGenMw };
 
   } catch (err) {
-    await markHealthFailure('CAISO', err.message);
+    await safeMarkFailure('CAISO', err.message);
     logger.error('CAISO EIA poll failed', { error: err.message });
     throw err;
   }
@@ -140,6 +124,7 @@ async function pollFuelMixFromEIA() {
       }
     }
 
+    // Process the most recent complete interval only
     const sortedKeys = Object.keys(grouped).sort().reverse();
     let fuelCount = 0;
     for (const key of sortedKeys.slice(0, 1)) {
@@ -155,9 +140,7 @@ async function pollFuelMixFromEIA() {
     return { fuelCount };
 
   } catch (err) {
-    try { await markHealthFailure('CAISO', err.message); } catch (e) {
-      logger.warn('Could not update CAISO health', { error: e.message });
-    }
+    await safeMarkFailure('CAISO', err.message);
     logger.error('CAISO fuel mix poll failed', { error: err.message });
     throw err;
   }

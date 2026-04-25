@@ -13,12 +13,17 @@ async function main() {
     console.log(`Connected to database: ${info.db} at ${info.now}`);
 
     const { rows } = await query('SELECT COUNT(*) AS count FROM regions');
-    console.log(`\nSELECT COUNT(*) FROM regions => ${rows[0].count}`);
+    const countRow = rows[0];
+    if (!countRow || countRow.count === undefined) {
+      console.error('Unexpected query result — COUNT(*) returned no rows');
+      process.exit(1);
+    }
+    console.log(`\nSELECT COUNT(*) FROM regions => ${countRow.count}`);
 
-    if (parseInt(rows[0].count) >= 8) {
+    if (parseInt(countRow.count) >= 8) {
       console.log('\n✓ Phase 1 complete — database has 8+ regions');
     } else {
-      console.log(`\n⚠ Only ${rows[0].count} regions found — run migrations first`);
+      console.log(`\n⚠ Only ${countRow.count} regions found — run migrations first`);
       console.log('  node src/db/migrate.js');
     }
   } catch (err) {

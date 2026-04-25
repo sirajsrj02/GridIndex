@@ -4,13 +4,14 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../.env') }
 
 const logger = require('../config/logger').forJob('pollERCOT');
 const { clients, sleep } = require('../utils/httpClient');
+const { parseEIAPeriod, eiaParams } = require('../utils/eiaHelpers');
 const { normalizeEnergyPrice, normalizeFuelMix, normalizeCarbonIntensity } = require('../services/priceNormalizer');
 const { upsertEnergyPrice, upsertFuelMix, upsertCarbonIntensity } = require('../db/queries/prices');
 const { markHealthSuccess, markHealthFailure } = require('../db/queries/health');
 
 const EIA_KEY = process.env.EIA_API_KEY;
+if (!EIA_KEY) throw new Error('EIA_API_KEY environment variable is required');
 
-// EIA fuel codes → our unified keys
 const EIA_FUEL_MAP = {
   'NG': 'natural_gas', 'COL': 'coal', 'NUC': 'nuclear',
   'WAT': 'hydro', 'WND': 'wind', 'SUN': 'solar',
@@ -18,32 +19,15 @@ const EIA_FUEL_MAP = {
   'BIO': 'other_renewables', 'WAS': 'other'
 };
 
-function parseEIAPeriod(period) {
-  if (!period) return null;
-  const s = String(period).trim();
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(s)) return new Date(`${s}:00:00Z`);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T00:00:00Z`);
-  if (/^\d{4}-\d{2}$/.test(s)) return new Date(`${s}-01T00:00:00Z`);
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-function eiaParams(base) {
-  const parts = [];
-  for (const [rawKey, val] of Object.entries(base)) {
-    const key = rawKey.endsWith('[]') ? rawKey.slice(0, -2) : rawKey;
-    if (Array.isArray(val)) {
-      val.forEach((v, i) => parts.push(`${key}[${i}]=${encodeURIComponent(v)}`));
-    } else {
-      parts.push(`${key}=${encodeURIComponent(val)}`);
-    }
+async function safeMarkFailure(source, message) {
+  try { await markHealthFailure(source, message); } catch (e) {
+    logger.warn(`Could not update health for ${source}`, { error: e.message });
   }
-  return parts.join('&');
 }
 
 /**
  * Pull ERCOT demand and generation data from EIA (TEX respondent code).
- * EIA is the most reliable source for ERCOT since ERCOT locked down their public API.
+ * EIA is the reliable source since ERCOT locked down their public dashboard API.
  */
 async function pollDemandFromEIA() {
   const start = Date.now();
@@ -55,7 +39,7 @@ async function pollDemandFromEIA() {
       frequency: 'hourly',
       'data[]': ['value'],
       'facets[respondent][]': ['TEX'],
-      'facets[type][]': ['D', 'NG'],  // D=Demand, NG=Net Generation
+      'facets[type][]': ['D', 'NG'],
       'sort[0][column]': 'period',
       'sort[0][direction]': 'desc',
       offset: 0,
@@ -66,7 +50,7 @@ async function pollDemandFromEIA() {
     const records = response.data?.response?.data || [];
     logger.info(`ERCOT via EIA: received ${records.length} records`);
 
-    // Track the most recent value per type explicitly by timestamp comparison
+    // Track the most recent value per type by explicit timestamp comparison
     const latestByType = {};
 
     for (const rec of records) {
@@ -80,9 +64,7 @@ async function pollDemandFromEIA() {
       }
 
       await upsertEnergyPrice(normalizeEnergyPrice({
-        regionCode: 'ERCOT',
-        timestamp: ts,
-        pricePerMwh: null,
+        regionCode: 'ERCOT', timestamp: ts, pricePerMwh: null,
         priceType: 'real_time_hourly',
         pricingNode: `EIA_TEX_${rec.type}`,
         demandMw: rec.type === 'D' ? val : null,
@@ -93,15 +75,16 @@ async function pollDemandFromEIA() {
 
     const demandMw = latestByType['D']?.val ?? null;
     const netGenMw = latestByType['NG']?.val ?? null;
-    const latestTs = latestByType['D']?.ts ?? latestByType['NG']?.ts ?? null;
-
     const elapsed = Date.now() - start;
-    await markHealthSuccess('ERCOT', elapsed);
+
+    try { await markHealthSuccess('ERCOT', elapsed); } catch (e) {
+      logger.warn('Could not update ERCOT health', { error: e.message });
+    }
     logger.info(`ERCOT demand: load=${demandMw}MW, netGen=${netGenMw}MW (${elapsed}ms)`);
-    return { demandMw, netGenMw, latestTs };
+    return { demandMw, netGenMw };
 
   } catch (err) {
-    await markHealthFailure('ERCOT', err.message);
+    await safeMarkFailure('ERCOT', err.message);
     logger.error('ERCOT EIA poll failed', { error: err.message });
     throw err;
   }
@@ -129,7 +112,6 @@ async function pollFuelMixFromEIA() {
     const response = await clients.eia.get(`/electricity/rto/fuel-type-data/data/?${qs}`);
     const records = response.data?.response?.data || [];
 
-    // Group by period to build a complete fuel mix
     const grouped = {};
     for (const rec of records) {
       const ts = parseEIAPeriod(rec.period);
@@ -142,7 +124,7 @@ async function pollFuelMixFromEIA() {
       }
     }
 
-    // Process most recent complete interval
+    // Process the most recent complete interval only
     const sortedKeys = Object.keys(grouped).sort().reverse();
     let fuelCount = 0;
     for (const key of sortedKeys.slice(0, 1)) {
@@ -158,9 +140,7 @@ async function pollFuelMixFromEIA() {
     return { fuelCount };
 
   } catch (err) {
-    try { await markHealthFailure('ERCOT', err.message); } catch (e) {
-      logger.warn('Could not update ERCOT health', { error: e.message });
-    }
+    await safeMarkFailure('ERCOT', err.message);
     logger.error('ERCOT fuel mix poll failed', { error: err.message });
     throw err;
   }

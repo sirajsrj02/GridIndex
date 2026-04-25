@@ -4,53 +4,29 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../.env') }
 
 const logger = require('../config/logger').forJob('pollEIA');
 const { clients, sleep } = require('../utils/httpClient');
+const { parseEIAPeriod, eiaParams } = require('../utils/eiaHelpers');
 const { normalizeEnergyPrice, normalizeFuelMix, normalizeCarbonIntensity } = require('../services/priceNormalizer');
 const { upsertManyEnergyPrices, upsertFuelMix, upsertCarbonIntensity } = require('../db/queries/prices');
 const { markHealthSuccess, markHealthFailure } = require('../db/queries/health');
 
 const EIA_KEY = process.env.EIA_API_KEY;
+if (!EIA_KEY) throw new Error('EIA_API_KEY environment variable is required');
 
-// EIA periods arrive as "2025-04-23T00" (hourly) or "2025-04" (monthly) — not full ISO.
-function parseEIAPeriod(period) {
-  if (!period) return null;
-  const s = String(period).trim();
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(s)) return new Date(`${s}:00:00Z`);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T00:00:00Z`);
-  if (/^\d{4}-\d{2}$/.test(s)) return new Date(`${s}-01T00:00:00Z`);
-  if (/^\d{4}$/.test(s)) return new Date(`${s}-01-01T00:00:00Z`);
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-// EIA v2 requires indexed array params: data[0]=value, facets[type][0]=D, etc.
-// Keys ending in [] have the brackets stripped, then [i] is appended per element.
-// Bracket characters in keys are NOT percent-encoded — EIA expects them literal.
-function eiaParams(base) {
-  const parts = [];
-  for (const [rawKey, val] of Object.entries(base)) {
-    const key = rawKey.endsWith('[]') ? rawKey.slice(0, -2) : rawKey;
-    if (Array.isArray(val)) {
-      val.forEach((v, i) => parts.push(`${key}[${i}]=${encodeURIComponent(v)}`));
-    } else {
-      parts.push(`${key}=${encodeURIComponent(val)}`);
-    }
-  }
-  return parts.join('&');
-}
-
-// EIA region codes → our region codes
+// EIA region respondent codes → our region codes
 const EIA_REGION_MAP = {
-  'CAL': 'CAISO',
-  'TEX': 'ERCOT',
-  'MIDA': 'PJM',
-  'MIDW': 'MISO',
-  'NY': 'NYISO',
-  'NE': 'ISONE',
-  'SE': 'ISONE',
-  'SW': 'WECC',
-  'TEN': 'PJM',
-  'FLA': 'PJM',
-  'CAR': 'PJM'
+  'CAL': 'CAISO', 'TEX': 'ERCOT', 'MIDA': 'PJM',
+  'MIDW': 'MISO', 'NY': 'NYISO', 'NE': 'ISONE',
+  'SE': 'ISONE', 'SW': 'WECC', 'TEN': 'PJM',
+  'FLA': 'PJM', 'CAR': 'PJM'
+};
+
+// US states → closest ISO/region for retail price context
+const STATE_TO_REGION = {
+  CA: 'CAISO', TX: 'ERCOT',
+  NY: 'NYISO', CT: 'ISONE', MA: 'ISONE', ME: 'ISONE', NH: 'ISONE', RI: 'ISONE', VT: 'ISONE',
+  PA: 'PJM', NJ: 'PJM', MD: 'PJM', VA: 'PJM', WV: 'PJM', OH: 'PJM', IN: 'PJM',
+  IL: 'MISO', MI: 'MISO', MN: 'MISO', WI: 'MISO', MO: 'MISO', IA: 'MISO',
+  AZ: 'WECC', CO: 'WECC', NV: 'WECC', OR: 'WECC', WA: 'WECC', UT: 'WECC'
 };
 
 // EIA fuel type codes → our unified labels
@@ -61,7 +37,7 @@ const EIA_FUEL_MAP = {
   'BIO': 'other_renewables', 'WAS': 'other'
 };
 
-// Safely record health without masking the original error
+// Safely record a health failure without masking the original error
 async function safeMarkFailure(source, message) {
   try { await markHealthFailure(source, message); } catch (e) {
     logger.warn(`Could not update health for ${source}`, { error: e.message });
@@ -87,7 +63,6 @@ async function pollHourlyDemand() {
       length: 100
     });
     const response = await clients.eia.get(`/electricity/rto/region-data/data/?${qs}`);
-
     const records = response.data?.response?.data || [];
     logger.info(`EIA demand: received ${records.length} records`);
 
@@ -95,27 +70,23 @@ async function pollHourlyDemand() {
     for (const rec of records) {
       const regionCode = EIA_REGION_MAP[rec.respondent];
       if (!regionCode) continue;
-
       const ts = parseEIAPeriod(rec.period);
       if (!ts) continue;
       const demandMw = parseFloat(rec.value);
       if (isNaN(demandMw)) continue;
 
       priceRows.push(normalizeEnergyPrice({
-        regionCode,
-        timestamp: ts,
-        pricePerMwh: null,
+        regionCode, timestamp: ts, pricePerMwh: null,
         priceType: 'real_time_hourly',
         pricingNode: `EIA_${rec.respondent}`,
-        demandMw,
-        source: 'EIA'
+        demandMw, source: 'EIA'
       }));
     }
 
     const count = await upsertManyEnergyPrices(priceRows);
     const elapsed = Date.now() - start;
     try { await markHealthSuccess('EIA_API', elapsed); } catch (e) {
-      logger.warn('Could not update EIA health', { error: e.message });
+      logger.warn('Could not update EIA_API health', { error: e.message });
     }
     logger.info(`EIA demand: upserted ${count} rows (${elapsed}ms)`);
     return count;
@@ -145,11 +116,9 @@ async function pollFuelMix() {
       length: 200
     });
     const response = await clients.eia.get(`/electricity/rto/fuel-type-data/data/?${qs}`);
-
     const records = response.data?.response?.data || [];
     logger.info(`EIA fuel mix: received ${records.length} records`);
 
-    // Group by (regionCode, period) to build complete fuel mix rows
     const grouped = {};
     for (const rec of records) {
       const regionCode = EIA_REGION_MAP[rec.respondent];
@@ -170,12 +139,8 @@ async function pollFuelMix() {
       const fuelMixRow = normalizeFuelMix(regionCode, timestamp, fuels, 'EIA');
       await upsertFuelMix(fuelMixRow);
       fuelCount++;
-
       const carbonRow = normalizeCarbonIntensity(regionCode, timestamp, fuelMixRow, 'EIA');
-      if (carbonRow) {
-        await upsertCarbonIntensity(carbonRow);
-        carbonCount++;
-      }
+      if (carbonRow) { await upsertCarbonIntensity(carbonRow); carbonCount++; }
     }
 
     logger.info(`EIA fuel mix: upserted ${fuelCount} fuel rows, ${carbonCount} carbon rows`);
@@ -190,20 +155,12 @@ async function pollFuelMix() {
 
 /**
  * Fetch retail electricity prices by state/sector (monthly data).
- * Retail prices exist for specific states — skip records without a valid region mapping.
+ * Skips states not mapped to a known ISO region.
  */
 async function pollRetailPrices() {
+  const start = Date.now();
   logger.info('Polling EIA retail electricity prices');
   await sleep(600);
-
-  // US states → closest ISO/region for retail price context
-  const STATE_TO_REGION = {
-    CA: 'CAISO', TX: 'ERCOT',
-    NY: 'NYISO', CT: 'ISONE', MA: 'ISONE', ME: 'ISONE', NH: 'ISONE', RI: 'ISONE', VT: 'ISONE',
-    PA: 'PJM', NJ: 'PJM', MD: 'PJM', VA: 'PJM', WV: 'PJM', OH: 'PJM', IN: 'PJM',
-    IL: 'MISO', MI: 'MISO', MN: 'MISO', WI: 'MISO', MO: 'MISO', IA: 'MISO',
-    AZ: 'WECC', CO: 'WECC', NV: 'WECC', OR: 'WECC', WA: 'WECC', UT: 'WECC'
-  };
 
   try {
     const qs = eiaParams({
@@ -217,58 +174,49 @@ async function pollRetailPrices() {
       length: 100
     });
     const response = await clients.eia.get(`/electricity/retail-sales/data/?${qs}`);
-
     const records = response.data?.response?.data || [];
     logger.info(`EIA retail prices: received ${records.length} records`);
 
     const rows = [];
     for (const rec of records) {
       if (!rec.price || isNaN(parseFloat(rec.price))) continue;
-
       const regionCode = STATE_TO_REGION[rec.stateid];
-      if (!regionCode) continue; // skip unmapped states
-
-      // EIA retail prices are in cents/kWh — convert to $/MWh (* 10)
-      const pricePerMwh = parseFloat(rec.price) * 10;
+      if (!regionCode) continue; // skip unmapped states — no silent fallback
       const ts = parseEIAPeriod(rec.period);
       if (!ts) continue;
-
+      // EIA retail prices in cents/kWh → convert to $/MWh (* 10)
       rows.push(normalizeEnergyPrice({
-        regionCode,
-        timestamp: ts,
-        pricePerMwh,
+        regionCode, timestamp: ts,
+        pricePerMwh: parseFloat(rec.price) * 10,
         priceType: 'monthly_retail',
         pricingNode: `${rec.stateid}_${rec.sectorName}`,
-        source: 'EIA',
-        rawData: rec
+        source: 'EIA', rawData: rec
       }));
     }
 
     const count = await upsertManyEnergyPrices(rows);
-    logger.info(`EIA retail prices: upserted ${count} rows`);
+    const elapsed = Date.now() - start;
+    try { await markHealthSuccess('EIA_API', elapsed); } catch (e) {
+      logger.warn('Could not update EIA_API health', { error: e.message });
+    }
+    logger.info(`EIA retail prices: upserted ${count} rows (${elapsed}ms)`);
     return count;
 
   } catch (err) {
+    await safeMarkFailure('EIA_API', err.message);
     logger.warn('EIA retail prices poll failed (non-critical)', { error: err.message });
     return 0;
   }
 }
 
-/**
- * Main entry point — runs all EIA polls in sequence with rate-limit gaps.
- */
 async function run() {
   logger.info('=== EIA poll starting ===');
   const results = {};
-
   results.demand = await pollHourlyDemand();
   await sleep(600);
-
   results.fuelMix = await pollFuelMix();
   await sleep(600);
-
   results.retail = await pollRetailPrices();
-
   logger.info('=== EIA poll complete ===', results);
   return results;
 }

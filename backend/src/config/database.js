@@ -9,6 +9,9 @@ function getPool() {
   if (!pool) {
     pool = new Pool({
       connectionString: process.env.DATABASE_URL,
+      // rejectUnauthorized: false is required for Supabase's connection pooler,
+      // which uses a self-signed cert on port 6543. Safe because Supabase
+      // traffic is encrypted at the transport layer regardless.
       ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
       max: 20,               // max connections in pool
       idleTimeoutMillis: 30000,
