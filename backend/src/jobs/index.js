@@ -5,6 +5,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../.env') }
 const cron = require('node-cron');
 const logger = require('../config/logger').forJob('scheduler');
 const { resetDailyCallCounters } = require('../db/queries/health');
+const { resetMonthlyUsage } = require('../db/queries/customers');
 
 const pollEIA    = require('./pollEIA');
 const pollCAISO  = require('./pollCAISO');
@@ -53,6 +54,12 @@ function start() {
   schedule('resetDailyCounters', '0 0 * * *', async () => {
     await resetDailyCallCounters();
     logger.info('[scheduler] Daily call counters reset');
+  });
+
+  // Reset monthly customer API usage on the 1st of each month at 00:05 UTC
+  schedule('resetMonthlyUsage', '5 0 1 * *', async () => {
+    await resetMonthlyUsage();
+    logger.info('[scheduler] Monthly customer usage counters reset');
   });
 
   logger.info('=== GridIndex scheduler running ===');

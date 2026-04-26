@@ -87,6 +87,9 @@ app.use((err, req, res, next) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 async function start() {
+  if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET environment variable is required');
+  if (!process.env.EIA_API_KEY) throw new Error('EIA_API_KEY environment variable is required');
+
   await testConnection();
 
   app.listen(PORT, () => {

@@ -66,6 +66,10 @@ router.post('/register', authLimiter, async (req, res) => {
       }
     });
   } catch (err) {
+    // PostgreSQL unique violation — race condition between check and insert
+    if (err.code === '23505') {
+      return res.status(409).json({ success: false, error: 'An account with this email already exists', code: 'EMAIL_TAKEN' });
+    }
     res.status(500).json({ success: false, error: 'Registration failed', code: 'SERVER_ERROR' });
   }
 });
