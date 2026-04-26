@@ -27,7 +27,7 @@ async function run({ limit = 100 } = {}) {
 
   if (missing.length === 0) {
     logger.info('Carbon backfill: nothing to do');
-    return { filled: 0, skipped: 0 };
+    return { filled: 0, skipped: 0, errors: 0 };
   }
 
   logger.info(`Carbon backfill: found ${missing.length} fuel_mix rows without carbon data`);
