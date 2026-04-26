@@ -7,14 +7,15 @@ const logger = require('../config/logger').forJob('scheduler');
 const { resetDailyCallCounters } = require('../db/queries/health');
 const { resetMonthlyUsage } = require('../db/queries/customers');
 
-const pollEIA    = require('./pollEIA');
-const pollCAISO  = require('./pollCAISO');
-const pollERCOT  = require('./pollERCOT');
-const pollPJM    = require('./pollPJM');
-const pollMISO   = require('./pollMISO');
-const pollNYISO  = require('./pollNYISO');
-const pollISONE  = require('./pollISONE');
-const pollWeather    = require('./pollWeather');
+const pollEIA         = require('./pollEIA');
+const pollEIAForecast = require('./pollEIAForecast');
+const pollCAISO       = require('./pollCAISO');
+const pollERCOT       = require('./pollERCOT');
+const pollPJM         = require('./pollPJM');
+const pollMISO        = require('./pollMISO');
+const pollNYISO       = require('./pollNYISO');
+const pollISONE       = require('./pollISONE');
+const pollWeather     = require('./pollWeather');
 const calculateCarbon = require('./calculateCarbon');
 
 // Wrap a job run so one failure never kills the scheduler process
@@ -36,7 +37,9 @@ function start() {
 
   // Stagger ISO polls across the hour to avoid hammering EIA simultaneously.
   // EIA data updates hourly so polling more often than once per hour adds no value.
-  schedule('pollEIA',     '2  * * * *', () => pollEIA.run());
+  schedule('pollEIA',         '2  * * * *', () => pollEIA.run());
+  // EIA STEO publishes monthly; daily at 06:00 UTC is plenty
+  schedule('pollEIAForecast', '0  6 * * *', () => pollEIAForecast.run());
   schedule('pollCAISO',   '8  * * * *', () => pollCAISO.run());
   schedule('pollERCOT',   '12 * * * *', () => pollERCOT.run());
   schedule('pollPJM',     '16 * * * *', () => pollPJM.run());
@@ -70,7 +73,8 @@ function start() {
 async function runOnce() {
   logger.info('[scheduler] Running all pollers once on startup...');
   const jobs = [
-    { name: 'pollEIA',     fn: () => pollEIA.run() },
+    { name: 'pollEIA',         fn: () => pollEIA.run() },
+    { name: 'pollEIAForecast', fn: () => pollEIAForecast.run() },
     { name: 'pollCAISO',   fn: () => pollCAISO.run() },
     { name: 'pollERCOT',   fn: () => pollERCOT.run() },
     { name: 'pollPJM',     fn: () => pollPJM.run() },

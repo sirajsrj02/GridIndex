@@ -608,6 +608,105 @@ describe('GET /api/v1/weather', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  GET /api/v1/forecast
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('GET /api/v1/forecast', () => {
+  const dayAheadRow = {
+    region_code: 'CAISO', timestamp: new Date(Date.now() + 3_600_000).toISOString(),
+    price_per_mwh: null, price_day_ahead_mwh: 52.40,
+    price_type: 'day_ahead_hourly', pricing_node: 'SYSTEM', source: 'EIA'
+  };
+  const weatherRow = {
+    region_code: 'CAISO', location_name: 'Los Angeles',
+    timestamp: new Date(Date.now() + 3_600_000).toISOString(),
+    temperature_f: 78.0, wind_speed_mph: 6.2, cloud_cover_pct: 15,
+    is_forecast: true, forecast_horizon_hours: 1
+  };
+  const steoRow = {
+    region_code: 'CAISO',
+    forecast_for_timestamp: new Date(Date.now() + 30 * 24 * 3_600_000).toISOString(),
+    price_forecast_mwh: 68.50, price_low_mwh: 58.23, price_high_mwh: 78.78,
+    forecast_source: 'EIA_STEO', confidence_score: 0.75
+  };
+
+  it('returns all three forecast layers for a valid region', async () => {
+    // query is called three times in parallel: day-ahead, weather, steo
+    query
+      .mockResolvedValueOnce({ rows: [dayAheadRow] })  // getDayAheadPrices
+      .mockResolvedValueOnce({ rows: [weatherRow] })   // getForecastWeather
+      .mockResolvedValueOnce({ rows: [steoRow] });     // getSTEOForecasts
+
+    const res = await request(app)
+      .get('/api/v1/forecast?region=CAISO&horizon=48')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.region).toBe('CAISO');
+    expect(res.body.data.horizon_hours).toBe(48);
+    expect(res.body.data.day_ahead.count).toBe(1);
+    expect(res.body.data.weather_forecast.count).toBe(1);
+    expect(res.body.data.steo_outlook.count).toBe(1);
+    expect(res.body.meta.query_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it('omits steo_outlook when steo=false', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [dayAheadRow] })
+      .mockResolvedValueOnce({ rows: [weatherRow] });
+    // only 2 query calls when steo=false
+
+    const res = await request(app)
+      .get('/api/v1/forecast?region=CAISO&horizon=24&steo=false')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.steo_outlook).toBeNull();
+    expect(res.body.data.day_ahead.count).toBe(1);
+  });
+
+  it('returns empty layers when no data exists', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const res = await request(app)
+      .get('/api/v1/forecast?region=ERCOT')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.day_ahead.count).toBe(0);
+    expect(res.body.data.day_ahead.summary).toBeNull();
+    expect(res.body.data.weather_forecast.count).toBe(0);
+    expect(res.body.data.steo_outlook.count).toBe(0);
+  });
+
+  it('caps horizon at 8760 hours (1 year)', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    const res = await request(app)
+      .get('/api/v1/forecast?region=CAISO&horizon=99999')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.horizon_hours).toBe(8760);
+  });
+
+  it('returns 400 when region is missing', async () => {
+    const res = await request(app).get('/api/v1/forecast').set(auth());
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('MISSING_REGION');
+  });
+
+  it('returns 401 without an API key', async () => {
+    const res = await request(app).get('/api/v1/forecast?region=CAISO');
+    expect(res.status).toBe(401);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  404 handler for unknown v1 routes
 // ══════════════════════════════════════════════════════════════════════════════
 

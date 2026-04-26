@@ -59,6 +59,7 @@ app.get('/', (req, res) => {
       fuelMix:  'GET /api/v1/fuel-mix/latest?region=CAISO',
       carbon:   'GET /api/v1/carbon/latest?region=CAISO',
       weather:  'GET /api/v1/weather?region=CAISO',
+      forecast: 'GET /api/v1/forecast?region=CAISO&horizon=48',
       regions:  'GET /api/v1/regions',
       register: 'POST /api/auth/register',
       login:    'POST /api/auth/login'
