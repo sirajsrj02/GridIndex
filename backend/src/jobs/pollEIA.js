@@ -140,7 +140,12 @@ async function pollFuelMix() {
       await upsertFuelMix(fuelMixRow);
       fuelCount++;
       const carbonRow = normalizeCarbonIntensity(regionCode, timestamp, fuelMixRow, 'EIA');
-      if (carbonRow) { await upsertCarbonIntensity(carbonRow); carbonCount++; }
+      if (carbonRow) {
+        await upsertCarbonIntensity(carbonRow);
+        carbonCount++;
+      } else {
+        logger.warn('Skipped carbon intensity — zero total generation', { regionCode, timestamp });
+      }
     }
 
     logger.info(`EIA fuel mix: upserted ${fuelCount} fuel rows, ${carbonCount} carbon rows`);
@@ -212,9 +217,9 @@ async function pollRetailPrices() {
 async function run() {
   logger.info('=== EIA poll starting ===');
   const results = {};
-  results.demand = await pollHourlyDemand();
+  try { results.demand = await pollHourlyDemand(); } catch (e) { results.demandError = e.message; }
   await sleep(600);
-  results.fuelMix = await pollFuelMix();
+  try { results.fuelMix = await pollFuelMix(); } catch (e) { results.fuelMixError = e.message; }
   await sleep(600);
   results.retail = await pollRetailPrices();
   logger.info('=== EIA poll complete ===', results);
