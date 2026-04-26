@@ -15,17 +15,20 @@
 function parseEIAPeriod(period) {
   if (!period) return null;
   const s = String(period).trim();
+
+  // Helper: return d if it's a real date, null if Invalid Date
+  const valid = (d) => (isNaN(d.getTime()) ? null : d);
+
   // Hourly: "2025-04-23T00" — append :00:00Z to make valid ISO 8601 UTC
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(s)) return new Date(`${s}:00:00Z`);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(s)) return valid(new Date(`${s}:00:00Z`));
   // Daily: "2025-04-23"
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T00:00:00Z`);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return valid(new Date(`${s}T00:00:00Z`));
   // Monthly: "2025-04" — use first of month
-  if (/^\d{4}-\d{2}$/.test(s)) return new Date(`${s}-01T00:00:00Z`);
+  if (/^\d{4}-\d{2}$/.test(s)) return valid(new Date(`${s}-01T00:00:00Z`));
   // Annual: "2025" — use January 1
-  if (/^\d{4}$/.test(s)) return new Date(`${s}-01-01T00:00:00Z`);
+  if (/^\d{4}$/.test(s)) return valid(new Date(`${s}-01-01T00:00:00Z`));
   // Fallback: let native parser handle it (handles ISO 8601 with offsets)
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
+  return valid(new Date(s));
 }
 
 /**

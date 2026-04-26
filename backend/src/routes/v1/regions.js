@@ -19,6 +19,7 @@ router.get('/', async (req, res) => {
        WHERE is_active = true
        ORDER BY tier, code`
     );
+    res.locals.responseRows = rows.length;
     res.json({
       success: true,
       data: rows,
