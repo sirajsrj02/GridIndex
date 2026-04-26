@@ -94,6 +94,7 @@ async function pollDemandFromEIA() {
  * Pull CAISO fuel mix from EIA fuel-type endpoint (CAL region).
  */
 async function pollFuelMixFromEIA() {
+  const start = Date.now();
   logger.info('Polling CAISO fuel mix via EIA');
   await sleep(600);
 
@@ -132,11 +133,18 @@ async function pollFuelMixFromEIA() {
       const fuelMixRow = normalizeFuelMix('CAISO', ts, fuels, 'EIA');
       await upsertFuelMix(fuelMixRow);
       const carbonRow = normalizeCarbonIntensity('CAISO', ts, fuelMixRow, 'EIA');
-      if (carbonRow) await upsertCarbonIntensity(carbonRow);
+      if (carbonRow) {
+        await upsertCarbonIntensity(carbonRow);
+      } else {
+        logger.warn('Skipped carbon intensity — zero total generation', { region: 'CAISO', timestamp: ts });
+      }
       fuelCount++;
       logger.info(`CAISO fuel mix: solar=${fuelMixRow.solar_pct?.toFixed(1)}%, wind=${fuelMixRow.wind_pct?.toFixed(1)}%, renewables=${fuelMixRow.renewable_total_pct?.toFixed(1)}%`);
     }
 
+    try { await markHealthSuccess('CAISO', Date.now() - start); } catch (e) {
+      logger.warn('Could not update CAISO health', { error: e.message });
+    }
     return { fuelCount };
 
   } catch (err) {
