@@ -33,7 +33,8 @@ app.use(express.urlencoded({ extended: false }));
 // ── HTTP request logging (skip in test) ──────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {
   app.use(morgan('combined', {
-    stream: { write: (msg) => logger.http(msg.trim()) }
+    // Use info level — 'http' (level 3) is filtered out when LOG_LEVEL=info in production
+    stream: { write: (msg) => logger.info(msg.trim()) }
   }));
 }
 
