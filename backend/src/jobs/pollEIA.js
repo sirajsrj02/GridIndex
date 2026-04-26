@@ -12,12 +12,19 @@ const { markHealthSuccess, markHealthFailure } = require('../db/queries/health')
 const EIA_KEY = process.env.EIA_API_KEY;
 if (!EIA_KEY) throw new Error('EIA_API_KEY environment variable is required');
 
-// EIA region respondent codes → our region codes
+// EIA region respondent codes → our region codes.
+// Only map codes that genuinely correspond to our tracked ISOs.
+// SE (Southeast/SERC), TEN (TVA), FLA (FRCC), CAR (Carolinas/SERC) are
+// intentionally excluded — they do NOT map to PJM or ISONE and storing them
+// there would corrupt demand figures for those regions.
 const EIA_REGION_MAP = {
-  'CAL': 'CAISO', 'TEX': 'ERCOT', 'MIDA': 'PJM',
-  'MIDW': 'MISO', 'NY': 'NYISO', 'NE': 'ISONE',
-  'SE': 'ISONE', 'SW': 'WECC', 'TEN': 'PJM',
-  'FLA': 'PJM', 'CAR': 'PJM'
+  'CAL':  'CAISO',
+  'TEX':  'ERCOT',
+  'MIDA': 'PJM',
+  'MIDW': 'MISO',
+  'NY':   'NYISO',
+  'NE':   'ISONE',
+  'SW':   'WECC'   // Southwest (AZ, NV, NM) is within WECC territory
 };
 
 // US states → closest ISO/region for retail price context
