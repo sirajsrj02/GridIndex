@@ -34,6 +34,7 @@ async function upsertWeatherData(row) {
        weather_code           = EXCLUDED.weather_code,
        cooling_degree_days    = EXCLUDED.cooling_degree_days,
        heating_degree_days    = EXCLUDED.heating_degree_days,
+       forecast_horizon_hours = EXCLUDED.forecast_horizon_hours,
        source                 = EXCLUDED.source`,
     [
       row.region_code, row.location_name, row.latitude, row.longitude, row.timestamp,

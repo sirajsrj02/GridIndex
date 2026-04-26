@@ -13,7 +13,8 @@ const pollPJM    = require('./pollPJM');
 const pollMISO   = require('./pollMISO');
 const pollNYISO  = require('./pollNYISO');
 const pollISONE  = require('./pollISONE');
-const pollWeather = require('./pollWeather');
+const pollWeather    = require('./pollWeather');
+const calculateCarbon = require('./calculateCarbon');
 
 // Wrap a job run so one failure never kills the scheduler process
 function schedule(name, cronExpr, fn) {
@@ -44,6 +45,9 @@ function start() {
 
   // Weather: once per hour, after the ISO polls
   schedule('pollWeather', '45 * * * *', () => pollWeather.run());
+
+  // Carbon backfill: catch any fuel_mix rows that missed carbon intensity (3am UTC daily)
+  schedule('calculateCarbon', '0 3 * * *', () => calculateCarbon.run());
 
   // Reset daily call counters at midnight UTC
   schedule('resetDailyCounters', '0 0 * * *', async () => {

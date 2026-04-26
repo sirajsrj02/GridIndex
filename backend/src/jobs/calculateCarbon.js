@@ -34,6 +34,7 @@ async function run({ limit = 100 } = {}) {
 
   let filled = 0;
   let skipped = 0;
+  let errors = 0;
 
   for (const row of missing) {
     const carbonRow = normalizeCarbonIntensity(row.region_code, row.timestamp, row, 'EIA');
@@ -46,12 +47,13 @@ async function run({ limit = 100 } = {}) {
       await upsertCarbonIntensity(carbonRow);
       filled++;
     } catch (err) {
+      errors++;
       logger.error('Failed to upsert carbon row', { region: row.region_code, timestamp: row.timestamp, error: err.message });
     }
   }
 
-  logger.info(`=== Carbon backfill complete: ${filled} filled, ${skipped} skipped ===`);
-  return { filled, skipped };
+  logger.info(`=== Carbon backfill complete: ${filled} filled, ${skipped} skipped, ${errors} errors ===`);
+  return { filled, skipped, errors };
 }
 
 if (require.main === module) {
