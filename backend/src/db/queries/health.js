@@ -4,7 +4,8 @@ const { query } = require('../../config/database');
 
 /**
  * Record a successful poll for a data source.
- * Uses UPSERT so new source names are created automatically.
+ * UPSERT — creates the row if the source_name doesn't exist yet.
+ * total_calls_cumulative is a lifetime counter (not daily — resets via resetMonthlyUsage job).
  */
 async function markHealthSuccess(sourceName, responseTimeMs) {
   return query(
@@ -13,21 +14,21 @@ async function markHealthSuccess(sourceName, responseTimeMs) {
         consecutive_failures, avg_response_time_ms, total_calls_today, updated_at)
      VALUES ($1, 'healthy', NOW(), NOW(), 0, $2, 1, NOW())
      ON CONFLICT (source_name) DO UPDATE SET
-       status                = 'healthy',
-       last_success_at       = NOW(),
-       last_attempt_at       = NOW(),
-       consecutive_failures  = 0,
-       avg_response_time_ms  = $2,
-       total_calls_today     = data_source_health.total_calls_today + 1,
-       updated_at            = NOW()`,
+       status               = 'healthy',
+       last_success_at      = NOW(),
+       last_attempt_at      = NOW(),
+       consecutive_failures = 0,
+       avg_response_time_ms = $2,
+       total_calls_today    = data_source_health.total_calls_today + 1,
+       updated_at           = NOW()`,
     [sourceName, responseTimeMs]
   );
 }
 
 /**
  * Record a failed poll for a data source.
- * Status becomes 'degraded' after 1 failure, 'down' after 3+.
- * Uses UPSERT so new source names are created automatically.
+ * Status becomes 'degraded' after 1 failure, 'down' after 2+ consecutive failures.
+ * UPSERT — creates the row if the source_name doesn't exist yet.
  */
 async function markHealthFailure(sourceName, errorMessage) {
   return query(
@@ -49,4 +50,11 @@ async function markHealthFailure(sourceName, errorMessage) {
   );
 }
 
-module.exports = { markHealthSuccess, markHealthFailure };
+/**
+ * Reset daily call counters — called by the nightly reset job at midnight UTC.
+ */
+async function resetDailyCallCounters() {
+  return query(`UPDATE data_source_health SET total_calls_today = 0, updated_at = NOW()`);
+}
+
+module.exports = { markHealthSuccess, markHealthFailure, resetDailyCallCounters };
