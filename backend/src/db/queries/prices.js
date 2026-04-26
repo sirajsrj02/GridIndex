@@ -1,10 +1,12 @@
 'use strict';
 
-const { query } = require('../../config/database');
+const { query, transaction } = require('../../config/database');
 
 /**
  * Upsert a single normalized energy_prices row.
  * Conflict key: (region_code, timestamp, price_type, pricing_node)
+ * pricing_node always defaults to 'SYSTEM' — never NULL — so the unique
+ * constraint works correctly (PostgreSQL treats NULL != NULL).
  */
 async function upsertEnergyPrice(row) {
   const sql = `
@@ -25,8 +27,8 @@ async function upsertEnergyPrice(row) {
       net_generation_mw    = EXCLUDED.net_generation_mw,
       interchange_mw       = EXCLUDED.interchange_mw,
       source               = EXCLUDED.source
-    WHERE energy_prices.price_per_mwh IS DISTINCT FROM EXCLUDED.price_per_mwh
   `;
+  // Always use a non-null pricing_node so the unique constraint fires correctly
   const pricingNode = row.pricing_node || 'SYSTEM';
   return query(sql, [
     row.region_code,
@@ -50,16 +52,41 @@ async function upsertEnergyPrice(row) {
 }
 
 /**
- * Upsert many price rows — runs each individually inside the same connection.
- * Returns count of rows processed.
+ * Upsert many price rows inside a single transaction.
+ * All rows succeed or all are rolled back — no partial writes.
+ * Returns count of rows submitted.
  */
 async function upsertManyEnergyPrices(rows) {
-  let count = 0;
-  for (const row of rows) {
-    await upsertEnergyPrice(row);
-    count++;
-  }
-  return count;
+  if (!rows || rows.length === 0) return 0;
+  await transaction(async (client) => {
+    for (const row of rows) {
+      const pricingNode = row.pricing_node || 'SYSTEM';
+      await client.query(`
+        INSERT INTO energy_prices (
+          region_code, timestamp, price_per_mwh, price_day_ahead_mwh,
+          price_energy_component, price_congestion_component, price_loss_component,
+          price_type, pricing_node, demand_mw, demand_forecast_mw,
+          net_generation_mw, interchange_mw, frequency_hz,
+          source, raw_data, is_estimated
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        ON CONFLICT (region_code, timestamp, price_type, pricing_node)
+        DO UPDATE SET
+          price_per_mwh     = EXCLUDED.price_per_mwh,
+          price_day_ahead_mwh = EXCLUDED.price_day_ahead_mwh,
+          demand_mw         = EXCLUDED.demand_mw,
+          net_generation_mw = EXCLUDED.net_generation_mw,
+          interchange_mw    = EXCLUDED.interchange_mw,
+          source            = EXCLUDED.source
+      `, [
+        row.region_code, row.timestamp, row.price_per_mwh, row.price_day_ahead_mwh,
+        row.price_energy_component, row.price_congestion_component, row.price_loss_component,
+        row.price_type, pricingNode, row.demand_mw, row.demand_forecast_mw,
+        row.net_generation_mw, row.interchange_mw, row.frequency_hz,
+        row.source, row.raw_data, row.is_estimated
+      ]);
+    }
+  });
+  return rows.length;
 }
 
 /**
@@ -82,18 +109,15 @@ async function upsertFuelMix(row) {
     )
     ON CONFLICT (region_code, timestamp)
     DO UPDATE SET
-      natural_gas_mw = EXCLUDED.natural_gas_mw,
-      natural_gas_pct = EXCLUDED.natural_gas_pct,
+      natural_gas_mw = EXCLUDED.natural_gas_mw, natural_gas_pct = EXCLUDED.natural_gas_pct,
       coal_mw = EXCLUDED.coal_mw, coal_pct = EXCLUDED.coal_pct,
       nuclear_mw = EXCLUDED.nuclear_mw, nuclear_pct = EXCLUDED.nuclear_pct,
       wind_mw = EXCLUDED.wind_mw, wind_pct = EXCLUDED.wind_pct,
       solar_mw = EXCLUDED.solar_mw, solar_pct = EXCLUDED.solar_pct,
       hydro_mw = EXCLUDED.hydro_mw, hydro_pct = EXCLUDED.hydro_pct,
-      battery_storage_mw = EXCLUDED.battery_storage_mw,
-      battery_storage_pct = EXCLUDED.battery_storage_pct,
+      battery_storage_mw = EXCLUDED.battery_storage_mw, battery_storage_pct = EXCLUDED.battery_storage_pct,
       petroleum_mw = EXCLUDED.petroleum_mw, petroleum_pct = EXCLUDED.petroleum_pct,
-      other_renewables_mw = EXCLUDED.other_renewables_mw,
-      other_renewables_pct = EXCLUDED.other_renewables_pct,
+      other_renewables_mw = EXCLUDED.other_renewables_mw, other_renewables_pct = EXCLUDED.other_renewables_pct,
       other_mw = EXCLUDED.other_mw, other_pct = EXCLUDED.other_pct,
       total_generation_mw = EXCLUDED.total_generation_mw,
       renewable_total_pct = EXCLUDED.renewable_total_pct,

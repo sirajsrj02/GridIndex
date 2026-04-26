@@ -56,7 +56,13 @@ const logger = createLogger({
   exitOnError: false
 });
 
-// Expose child-logger factory so jobs can tag their output
+// Verify Winston supports .child() before attaching helpers
+// (guards against future library upgrades that remove the method)
+if (typeof logger.child !== 'function') {
+  throw new Error('Winston logger does not support .child() — check winston version in package.json');
+}
+
+// Expose child-logger factory so jobs and routes can tag their output with context
 logger.forJob = (jobName) => logger.child({ job: jobName });
 logger.forRoute = (route) => logger.child({ route });
 
