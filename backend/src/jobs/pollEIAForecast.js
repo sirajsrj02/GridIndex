@@ -15,12 +15,6 @@ if (!EIA_KEY) throw new Error('EIA_API_KEY environment variable is required');
 // region. This lets the /forecast endpoint query by region_code without joins.
 const US_REGIONS = ['CAISO', 'ERCOT', 'PJM', 'MISO', 'NYISO', 'ISONE', 'SPP', 'WECC'];
 
-// EIA STEO series IDs and what they represent
-const STEO_SERIES = {
-  ELERTPUS: { label: 'US retail electricity price (cents/kWh)',  unit: 'cents_kwh' },
-  ESTNIPUS: { label: 'US electricity net generation (thousand MWh/month)', unit: 'thousand_mwh' }
-};
-
 /**
  * Confidence score for an EIA STEO forecast row based on how far ahead it is.
  * STEO accuracy degrades significantly beyond 6 months.
@@ -45,19 +39,6 @@ async function pollSTEOPriceOutlook() {
 
   try {
     const qs = eiaParams({
-      api_key:                EIA_KEY,
-      frequency:              'monthly',
-      'data[]':               ['value'],
-      'facets[seriesId][]':   ['ELERTPUS'],
-      'sort[0][column]':      'period',
-      'sort[0][direction]':   'asc',
-      offset:                 0,
-      length:                 24  // up to 24 months ahead
-    });
-
-    const response = await clients.eia.get(`/electricity/retail-sales/data/?${qs}`);
-    // STEO lives at /steo/data/ not retail-sales — try STEO endpoint
-    const steoQs = eiaParams({
       api_key:              EIA_KEY,
       frequency:            'monthly',
       'data[]':             ['value'],
@@ -65,11 +46,11 @@ async function pollSTEOPriceOutlook() {
       'sort[0][column]':    'period',
       'sort[0][direction]': 'asc',
       offset:               0,
-      length:               24
+      length:               24  // up to 24 months ahead
     });
 
-    const steoResponse = await clients.eia.get(`/steo/data/?${steoQs}`);
-    const records = steoResponse.data?.response?.data || [];
+    const response = await clients.eia.get(`/steo/data/?${qs}`);
+    const records = response.data?.response?.data || [];
     logger.info(`EIA STEO: received ${records.length} records`);
 
     if (!records.length) {
@@ -87,7 +68,6 @@ async function pollSTEOPriceOutlook() {
       // Only include future months
       if (forecastTs <= now) continue;
 
-      const seriesMeta = STEO_SERIES[rec.seriesId] || {};
       let priceMwh = null;
       let priceLow = null;
       let priceHigh = null;
@@ -208,10 +188,18 @@ async function pollRegionalLoadForecast() {
 
     const count = await upsertManyForecasts(rows);
     const elapsed = Date.now() - start;
+
+    try { await markHealthSuccess('EIA_API', elapsed); } catch (e) {
+      logger.warn('Could not update EIA_API health', { error: e.message });
+    }
+
     logger.info(`EIA load forecast: upserted ${count} rows (${elapsed}ms)`);
     return count;
 
   } catch (err) {
+    try { await markHealthFailure('EIA_API', err.message); } catch (e) {
+      logger.warn('Could not mark EIA_API failure', { error: e.message });
+    }
     logger.error('EIA regional load forecast poll failed', { error: err.message });
     throw err;
   }
