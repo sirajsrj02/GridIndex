@@ -55,6 +55,34 @@ const updateSchema = Joi.object({
 // ── Route helpers ─────────────────────────────────────────────────────────────
 
 /**
+ * Escape special HTML characters to prevent injection in emails / logs.
+ */
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
+ * Validate that the requested region is included in the customer's plan.
+ */
+function validateRegionAccess(regionCode, customer, res) {
+  const allowed = customer.allowed_regions || [];
+  if (!allowed.includes(regionCode)) {
+    res.status(403).json({
+      success: false,
+      error:   `Your plan does not include access to ${regionCode}. Allowed: ${allowed.join(', ')}`,
+      code:    'REGION_NOT_ALLOWED'
+    });
+    return false;
+  }
+  return true;
+}
+
+/**
  * Validate that the delivery method has the required contact field.
  */
 function validateDelivery(method, body, res) {
@@ -139,6 +167,7 @@ router.post('/', requireWebhookPlan, async (req, res) => {
     return res.status(400).json({ success: false, error: error.details[0].message, code: 'VALIDATION_ERROR' });
   }
 
+  if (!validateRegionAccess(value.region_code, req.customer, res)) return;
   if (!validateThreshold(value.alert_type, value, res)) return;
   if (!validateDelivery(value.delivery_method, value, res)) return;
 
@@ -218,8 +247,11 @@ router.put('/:id', requireWebhookPlan, async (req, res) => {
     return res.status(400).json({ success: false, error: error.details[0].message, code: 'VALIDATION_ERROR' });
   }
 
+  // If alert_type is being changed, the new required threshold must also be provided
+  if (value.alert_type !== undefined && !validateThreshold(value.alert_type, value, res)) return;
+
   try {
-    // Map camelCase patch fields to snake_case for the query layer
+    // Map patch fields to snake_case for the query layer
     const patch = {};
     if (value.alert_name                   !== undefined) patch.alert_name                   = value.alert_name;
     if (value.alert_type                   !== undefined) patch.alert_type                   = value.alert_type;

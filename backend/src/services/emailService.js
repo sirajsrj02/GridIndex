@@ -45,13 +45,22 @@ function priceRow(label, value) {
  * @param {string} opts.apiKey
  * @param {string} opts.plan
  */
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 async function sendWelcomeEmail({ email, fullName, apiKey, plan }) {
-  const name = fullName || email.split('@')[0];
+  const name = escapeHtml(fullName || email.split('@')[0]);
   const subject = 'Welcome to GridIndex — your API key is ready';
   const html = `
     <div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;color:#111827;">
       <h1 style="font-size:24px;margin-bottom:8px;">Welcome to GridIndex, ${name}!</h1>
-      <p style="color:#6b7280;">Your account is live on the <strong>${plan || 'Starter'}</strong> plan.</p>
+      <p style="color:#6b7280;">Your account is live on the <strong>${escapeHtml(plan || 'Starter')}</strong> plan.</p>
 
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:20px;margin:24px 0;">
         <p style="margin:0 0 8px;font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;">Your API Key</p>

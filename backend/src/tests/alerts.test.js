@@ -271,6 +271,21 @@ describe('POST /api/v1/alerts', () => {
     expect(res.status).toBe(429);
     expect(res.body.code).toBe('ALERT_LIMIT_REACHED');
   });
+
+  it('blocks creating alert for region not in customer plan', async () => {
+    // Customer only has CAISO + ERCOT
+    getCustomerByApiKey.mockResolvedValue({
+      ...mockCustomer,
+      allowed_regions: ['CAISO', 'ERCOT']
+    });
+    const res = await request(app)
+      .post('/api/v1/alerts')
+      .set('X-API-Key', TEST_API_KEY)
+      .send({ ...validBody, region_code: 'PJM' });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('REGION_NOT_ALLOWED');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -350,6 +365,32 @@ describe('PUT /api/v1/alerts/:id', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects changing alert_type without providing the new required threshold', async () => {
+    // Changing from price_above to carbon_above without threshold_carbon_g_kwh
+    const res = await request(app)
+      .put('/api/v1/alerts/1')
+      .set('X-API-Key', TEST_API_KEY)
+      .send({ alert_type: 'carbon_above' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('MISSING_THRESHOLD');
+  });
+
+  it('allows changing alert_type when new threshold is also provided', async () => {
+    updateAlert.mockResolvedValue({
+      ...mockAlert,
+      alert_type:             'carbon_above',
+      threshold_carbon_g_kwh: '400.00'
+    });
+    const res = await request(app)
+      .put('/api/v1/alerts/1')
+      .set('X-API-Key', TEST_API_KEY)
+      .send({ alert_type: 'carbon_above', threshold_carbon_g_kwh: 400 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.alert_type).toBe('carbon_above');
   });
 });
 
