@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const { createCustomer, getCustomerByEmail, rotateApiKey } = require('../../db/queries/customers');
 const { requireJwt } = require('../../middleware/auth');
 const { authLimiter } = require('../../middleware/rateLimit');
+const { sendWelcomeEmail } = require('../../services/emailService');
 
 const router = Router();
 
@@ -56,6 +57,14 @@ router.post('/register', authLimiter, async (req, res) => {
     });
 
     const token = issueToken(customer.id);
+
+    // Fire-and-forget — never block the registration response on email delivery
+    sendWelcomeEmail({
+      email:    customer.email,
+      fullName: customer.full_name,
+      apiKey:   customer.api_key,
+      plan:     customer.plan_type
+    });
 
     res.status(201).json({
       success: true,

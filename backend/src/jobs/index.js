@@ -17,6 +17,7 @@ const pollNYISO       = require('./pollNYISO');
 const pollISONE       = require('./pollISONE');
 const pollWeather     = require('./pollWeather');
 const calculateCarbon = require('./calculateCarbon');
+const alertEngine     = require('./alertEngine');
 
 // Wrap a job run so one failure never kills the scheduler process
 function schedule(name, cronExpr, fn) {
@@ -52,6 +53,9 @@ function start() {
 
   // Carbon backfill: catch any fuel_mix rows that missed carbon intensity (3am UTC daily)
   schedule('calculateCarbon', '0 3 * * *', () => calculateCarbon.run());
+
+  // Alert engine: runs every 5 minutes to evaluate active alerts against latest data
+  schedule('alertEngine', '*/5 * * * *', () => alertEngine.run());
 
   // Reset daily call counters at midnight UTC
   schedule('resetDailyCounters', '0 0 * * *', async () => {

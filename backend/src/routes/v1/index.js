@@ -11,6 +11,7 @@ const carbonRouter   = require('./carbon');
 const weatherRouter  = require('./weather');
 const forecastRouter = require('./forecast');
 const healthRouter   = require('./health');
+const alertsRouter   = require('./alerts');
 
 const router = Router();
 
@@ -26,6 +27,7 @@ router.use('/fuel-mix',  fuelMixRouter);
 router.use('/carbon',    carbonRouter);
 router.use('/weather',   weatherRouter);
 router.use('/forecast',  forecastRouter);
+router.use('/alerts',    alertsRouter);
 
 // Catch-all for unknown v1 routes
 router.use((req, res) => {
