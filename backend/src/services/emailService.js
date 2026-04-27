@@ -104,6 +104,25 @@ async function sendAlertEmail({ email, alertName, region, alertType, currentPric
     renewable_below: 'Renewable generation fell below threshold'
   }[alertType] || alertType;
 
+  // Format current value and threshold with the correct unit for the alert type
+  const isCarbon    = alertType === 'carbon_above';
+  const isRenewable = alertType === 'renewable_below';
+  const isPct       = alertType === 'pct_change';
+
+  function fmtCurrent(v) {
+    if (v == null) return null;
+    if (isCarbon)    return `${Number(v).toFixed(2)} g/kWh`;
+    if (isRenewable) return `${Number(v).toFixed(1)}%`;
+    return `$${Number(v).toFixed(2)}/MWh`;
+  }
+  function fmtThreshold(v) {
+    if (v == null) return null;
+    if (isCarbon)    return `${Number(v).toFixed(2)} g/kWh`;
+    if (isRenewable) return `${Number(v).toFixed(1)}%`;
+    if (isPct)       return `${Number(v).toFixed(2)}%`;
+    return `$${Number(v).toFixed(2)}/MWh`;
+  }
+
   const html = `
     <div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;color:#111827;">
       <div style="background:#fef2f2;border-left:4px solid #dc2626;padding:16px 20px;border-radius:0 8px 8px 0;margin-bottom:24px;">
@@ -114,9 +133,9 @@ async function sendAlertEmail({ email, alertName, region, alertType, currentPric
       <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
         ${priceRow('Region',    region)}
         ${priceRow('Alert',     label)}
-        ${priceRow('Current',   currentPrice != null ? `$${Number(currentPrice).toFixed(2)}/MWh` : null)}
-        ${priceRow('Threshold', threshold    != null ? `$${Number(threshold).toFixed(2)}/MWh`    : null)}
-        ${priceRow('Change',    pctChange    != null ? `${Number(pctChange).toFixed(2)}%`         : null)}
+        ${priceRow('Current',   fmtCurrent(currentPrice))}
+        ${priceRow('Threshold', fmtThreshold(threshold))}
+        ${priceRow('Change',    pctChange != null ? `${Number(pctChange).toFixed(2)}%` : null)}
       </table>
 
       <p style="font-size:13px;color:#6b7280;">

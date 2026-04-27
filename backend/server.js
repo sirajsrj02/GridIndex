@@ -15,6 +15,7 @@ const { globalLimiter } = require('./src/middleware/rateLimit');
 const v1Router      = require('./src/routes/v1/index');
 const authRouter    = require('./src/routes/auth/index');
 const dashRouter    = require('./src/routes/dashboard/index');
+const { verifyTransport } = require('./src/services/emailService');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -94,6 +95,7 @@ async function start() {
   if (!process.env.EIA_API_KEY) throw new Error('EIA_API_KEY environment variable is required');
 
   await testConnection();
+  await verifyTransport();
 
   app.listen(PORT, () => {
     logger.info(`GridIndex API listening on port ${PORT}`, { env: process.env.NODE_ENV || 'development' });

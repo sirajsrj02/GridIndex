@@ -94,8 +94,8 @@ async function updateAlert(alertId, customerId, patch) {
 }
 
 /**
- * Soft-delete an alert (sets is_active = false).
- * Returns true if the row existed and was updated.
+ * Permanently delete an alert.
+ * Returns true if the row existed and was deleted.
  */
 async function deleteAlert(alertId, customerId) {
   const { rowCount } = await query(

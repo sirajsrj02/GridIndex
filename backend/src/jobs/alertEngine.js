@@ -233,7 +233,7 @@ async function runForRegion(regionCode) {
           regionCode,
           alertType:              alert.alert_type,
           priceAtTrigger:         triggerData.currentPrice,
-          priceBefore:            triggerData.pctChange != null ? priceRow?.price_per_mwh : null,
+          priceBefore:            triggerData.pctChange != null ? prevPriceRow?.price_per_mwh : null,
           pctChange:              triggerData.pctChange,
           carbonAtTrigger:        triggerData.carbonIntensity,
           renewablePctAtTrigger:  triggerData.renewablePct,

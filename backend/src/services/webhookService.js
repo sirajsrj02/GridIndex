@@ -6,7 +6,7 @@ const logger = require('../config/logger').forJob('webhookService');
 
 const WEBHOOK_TIMEOUT_MS = 10_000;  // 10 s — generous for slow endpoints
 const MAX_RETRIES        = 3;
-const RETRY_DELAYS_MS    = [1_000, 3_000, 9_000]; // exponential-ish back-off
+const RETRY_DELAYS_MS    = [1_000, 3_000]; // delays between attempt 1→2 and 2→3
 
 /**
  * Sign a webhook payload with HMAC-SHA256 using the alert's webhook_secret.
