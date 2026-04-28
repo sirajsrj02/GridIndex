@@ -44,10 +44,10 @@ const mockCustomer = {
   email:           'alerts@test.com',
   full_name:       'Alert Tester',
   api_key:         TEST_API_KEY,
-  plan_type:       'pro',
+  plan:            'pro',
   is_active:       true,
   calls_this_month: 0,
-  calls_limit:     100_000,
+  monthly_limit:   100_000,
   allowed_regions: ['CAISO', 'ERCOT', 'PJM', 'MISO', 'NYISO', 'ISONE', 'SPP', 'WECC']
 };
 
@@ -193,7 +193,7 @@ describe('POST /api/v1/alerts', () => {
   });
 
   it('blocks webhook alerts for starter plan', async () => {
-    getCustomerByApiKey.mockResolvedValue({ ...mockCustomer, plan_type: 'starter' });
+    getCustomerByApiKey.mockResolvedValue({ ...mockCustomer, plan: 'starter' });
     const res = await request(app)
       .post('/api/v1/alerts')
       .set('X-API-Key', TEST_API_KEY)
@@ -259,7 +259,7 @@ describe('POST /api/v1/alerts', () => {
   });
 
   it('enforces alert cap for starter plan', async () => {
-    getCustomerByApiKey.mockResolvedValue({ ...mockCustomer, plan_type: 'starter' });
+    getCustomerByApiKey.mockResolvedValue({ ...mockCustomer, plan: 'starter' });
     // Return 5 existing alerts (starter cap)
     listAlerts.mockResolvedValue(Array(5).fill(mockAlert));
 

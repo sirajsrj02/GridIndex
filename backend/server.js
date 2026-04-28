@@ -15,6 +15,7 @@ const { globalLimiter } = require('./src/middleware/rateLimit');
 const v1Router      = require('./src/routes/v1/index');
 const authRouter    = require('./src/routes/auth/index');
 const dashRouter    = require('./src/routes/dashboard/index');
+const adminRouter   = require('./src/routes/admin/index');
 const { verifyTransport } = require('./src/services/emailService');
 
 const app = express();
@@ -25,7 +26,13 @@ app.use(helmet());
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+  // Allow browser clients to read rate-limit headers on cross-origin responses
+  exposedHeaders: [
+    'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset',
+    'X-RateLimit-Burst-Limit', 'X-RateLimit-Burst-Remaining',
+    'Retry-After'
+  ]
 }));
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
@@ -46,6 +53,7 @@ app.use(globalLimiter);
 app.use('/api/v1',        v1Router);
 app.use('/api/auth',      authRouter);
 app.use('/api/dashboard', dashRouter);
+app.use('/api/admin',     adminRouter);
 
 // Root health check — no auth, no rate limit
 app.get('/', (req, res) => {

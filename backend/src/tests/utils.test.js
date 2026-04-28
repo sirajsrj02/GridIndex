@@ -6,6 +6,7 @@
  */
 
 const { parseEIAPeriod, eiaParams } = require('../utils/eiaHelpers');
+const { EIA_REGION_MAP, STATE_TO_REGION } = require('../jobs/pollEIA');
 const {
   safeNumeric,
   normalizeFuelMix,
@@ -374,6 +375,58 @@ describe('normalizeCarbonIntensity', () => {
 
     expect(result.renewable_percentage).toBeCloseTo(50, 1);  // wind = 50%
     expect(result.clean_energy_percentage).toBeCloseTo(100, 1); // wind + nuclear = 100%
+  });
+});
+
+// ─────────────────────────── EIA_REGION_MAP / STATE_TO_REGION ─────────────────
+
+describe('EIA_REGION_MAP', () => {
+  it('maps all 8 expected EIA respondent codes', () => {
+    expect(EIA_REGION_MAP['CAL']).toBe('CAISO');
+    expect(EIA_REGION_MAP['TEX']).toBe('ERCOT');
+    expect(EIA_REGION_MAP['MIDA']).toBe('PJM');
+    expect(EIA_REGION_MAP['MIDW']).toBe('MISO');
+    expect(EIA_REGION_MAP['NY']).toBe('NYISO');
+    expect(EIA_REGION_MAP['NE']).toBe('ISONE');
+    expect(EIA_REGION_MAP['SW']).toBe('WECC');
+    expect(EIA_REGION_MAP['CENT']).toBe('SPP');
+  });
+
+  it('maps CENT to SPP (the previously missing entry)', () => {
+    expect(EIA_REGION_MAP['CENT']).toBe('SPP');
+  });
+
+  it('does not map excluded SERC/TVA/FRCC respondent codes', () => {
+    expect(EIA_REGION_MAP['SE']).toBeUndefined();
+    expect(EIA_REGION_MAP['TEN']).toBeUndefined();
+    expect(EIA_REGION_MAP['FLA']).toBeUndefined();
+    expect(EIA_REGION_MAP['CAR']).toBeUndefined();
+  });
+});
+
+describe('STATE_TO_REGION', () => {
+  it('maps all 5 core SPP footprint states', () => {
+    expect(STATE_TO_REGION['KS']).toBe('SPP');
+    expect(STATE_TO_REGION['OK']).toBe('SPP');
+    expect(STATE_TO_REGION['NE']).toBe('SPP');
+    expect(STATE_TO_REGION['SD']).toBe('SPP');
+    expect(STATE_TO_REGION['ND']).toBe('SPP');
+  });
+
+  it('continues to map all previously-existing regions correctly', () => {
+    expect(STATE_TO_REGION['CA']).toBe('CAISO');
+    expect(STATE_TO_REGION['TX']).toBe('ERCOT');
+    expect(STATE_TO_REGION['NY']).toBe('NYISO');
+    expect(STATE_TO_REGION['MA']).toBe('ISONE');
+    expect(STATE_TO_REGION['PA']).toBe('PJM');
+    expect(STATE_TO_REGION['IL']).toBe('MISO');
+    expect(STATE_TO_REGION['AZ']).toBe('WECC');
+  });
+
+  it('returns undefined for unmapped states (no silent fallback)', () => {
+    expect(STATE_TO_REGION['FL']).toBeUndefined();
+    expect(STATE_TO_REGION['GA']).toBeUndefined();
+    expect(STATE_TO_REGION['AL']).toBeUndefined();
   });
 });
 

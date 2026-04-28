@@ -2,6 +2,7 @@
 
 const { Router } = require('express');
 const { requireApiKey } = require('../../middleware/auth');
+const { apiRateLimiter } = require('../../middleware/rateLimit');
 const { usageLogger } = require('../../middleware/usageLogger');
 
 const regionsRouter  = require('./regions');
@@ -18,8 +19,8 @@ const router = Router();
 // Health is public — no API key required
 router.use('/sources/health', healthRouter);
 
-// All other v1 routes require a valid API key + usage logging
-router.use(requireApiKey, usageLogger);
+// All other v1 routes require a valid API key, per-minute burst limit, + usage logging
+router.use(requireApiKey, apiRateLimiter, usageLogger);
 
 router.use('/regions',   regionsRouter);
 router.use('/prices',    pricesRouter);

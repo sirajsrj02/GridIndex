@@ -19,11 +19,13 @@ router.get('/', async (req, res) => {
        ORDER BY source_name`
     );
 
-    const overallHealthy = rows.every(r => r.status !== 'down');
+    // Overall is 'healthy' only when every source is healthy.
+    // Any source that is 'degraded' or 'down' makes the overall 'degraded'.
+    const overall = rows.every(r => r.status === 'healthy') ? 'healthy' : 'degraded';
 
     res.json({
       success: true,
-      overall: overallHealthy ? 'healthy' : 'degraded',
+      overall,
       sources: rows,
       meta: { count: rows.length, query_ms: Date.now() - start }
     });

@@ -4,8 +4,10 @@ const { Router } = require('express');
 const Joi = require('joi');
 const {
   createAlert, listAlerts, getAlert,
-  updateAlert, deleteAlert, getAlertHistory
+  updateAlert, deleteAlert, getAlertHistory,
+  getAllCustomerAlertHistory
 } = require('../../db/queries/alerts');
+const { buildPayload, testWebhookDelivery } = require('../../services/webhookService');
 
 const router = Router();
 
@@ -127,7 +129,7 @@ function validateThreshold(type, body, res) {
 const WEBHOOK_PLANS = ['pro', 'enterprise'];
 
 function requireWebhookPlan(req, res, next) {
-  if (req.body?.delivery_method === 'webhook' && !WEBHOOK_PLANS.includes(req.customer?.plan_type)) {
+  if (req.body?.delivery_method === 'webhook' && !WEBHOOK_PLANS.includes(req.customer?.plan)) {
     return res.status(403).json({
       success: false,
       error:   'Webhook delivery requires a Pro or Enterprise plan',
@@ -174,7 +176,7 @@ router.post('/', requireWebhookPlan, async (req, res) => {
   // Enforce per-plan alert cap
   try {
     const existing = await listAlerts(req.customer.id);
-    const cap = MAX_ALERTS[req.customer.plan_type] ?? MAX_ALERTS.starter;
+    const cap = MAX_ALERTS[req.customer.plan] ?? MAX_ALERTS.starter;
     if (existing.length >= cap) {
       return res.status(429).json({
         success: false,
@@ -209,6 +211,32 @@ router.post('/', requireWebhookPlan, async (req, res) => {
   } catch (err) {
     res.locals.errorMessage = err.message;
     res.status(500).json({ success: false, error: 'Failed to create alert', code: 'DB_ERROR' });
+  }
+});
+
+/**
+ * GET /api/v1/alerts/history?limit=100&region=CAISO&days=30
+ * All trigger history across every alert owned by this customer.
+ * Returned most-recent-first, enriched with alert_name from price_alerts.
+ * IMPORTANT: must be declared before /:id so Express doesn't treat "history" as an ID.
+ *
+ * Query params:
+ *   limit  — max rows (1–500, default 100)
+ *   region — filter to a single region code
+ *   days   — only include events from the last N days (1–365)
+ */
+router.get('/history', async (req, res) => {
+  const limit  = Math.min(parseInt(req.query.limit) || 100, 500);
+  const region = VALID_REGIONS.includes(req.query.region) ? req.query.region : undefined;
+  const days   = Math.min(Math.max(parseInt(req.query.days) || 0, 0), 365) || undefined;
+
+  try {
+    const rows = await getAllCustomerAlertHistory(req.customer.id, limit, { region, days });
+    res.locals.responseRows = rows.length;
+    res.json({ success: true, count: rows.length, data: rows });
+  } catch (err) {
+    res.locals.errorMessage = err.message;
+    res.status(500).json({ success: false, error: 'Failed to fetch alert history', code: 'DB_ERROR' });
   }
 });
 
@@ -293,6 +321,67 @@ router.delete('/:id', async (req, res) => {
   } catch (err) {
     res.locals.errorMessage = err.message;
     res.status(500).json({ success: false, error: 'Failed to delete alert', code: 'DB_ERROR' });
+  }
+});
+
+/**
+ * POST /api/v1/alerts/:id/test
+ * Fire a single test webhook payload to the alert's configured URL.
+ * Only valid for webhook-delivery alerts. No retries, no history record.
+ * Returns the delivery outcome so the UI can show a clear success/failure.
+ */
+router.post('/:id/test', async (req, res) => {
+  const alertId = parseInt(req.params.id);
+  if (isNaN(alertId)) {
+    return res.status(400).json({ success: false, error: 'Invalid alert ID', code: 'INVALID_ID' });
+  }
+
+  try {
+    const alert = await getAlert(alertId, req.customer.id);
+    if (!alert) {
+      return res.status(404).json({ success: false, error: 'Alert not found', code: 'NOT_FOUND' });
+    }
+    if (alert.delivery_method !== 'webhook') {
+      return res.status(400).json({ success: false, error: 'This alert does not use webhook delivery', code: 'NOT_WEBHOOK' });
+    }
+    if (!alert.webhook_url) {
+      return res.status(400).json({ success: false, error: 'Alert has no webhook URL configured', code: 'MISSING_WEBHOOK_URL' });
+    }
+
+    // Build a realistic-looking test payload (event type is 'alert.test' so receivers can filter)
+    const payload = {
+      ...buildPayload({
+        alertId:     alert.id,
+        alertName:   alert.alert_name,
+        alertType:   alert.alert_type,
+        region:      alert.region_code,
+        triggeredAt: new Date().toISOString(),
+        // Sample values appropriate to the alert type
+        currentPrice:    alert.alert_type.startsWith('price') || alert.alert_type === 'pct_change'
+                           ? (alert.threshold_price_mwh ?? 85.42)
+                           : null,
+        threshold:       alert.threshold_price_mwh ?? null,
+        pctChange:       alert.threshold_pct_change ?? null,
+        carbonIntensity: alert.threshold_carbon_g_kwh ?? null,
+        renewablePct:    alert.threshold_renewable_pct ?? null
+      }),
+      event: 'alert.test'   // Override so downstream consumers can distinguish test payloads
+    };
+
+    const result = await testWebhookDelivery({
+      webhookUrl:    alert.webhook_url,
+      webhookSecret: alert.webhook_secret,
+      payload
+    });
+
+    res.json({
+      success:    result.delivered,
+      data:       result,
+      webhook_url: alert.webhook_url
+    });
+  } catch (err) {
+    res.locals.errorMessage = err.message;
+    res.status(500).json({ success: false, error: 'Failed to test webhook', code: 'SERVER_ERROR' });
   }
 });
 

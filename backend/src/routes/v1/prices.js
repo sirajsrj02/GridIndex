@@ -23,6 +23,52 @@ function validateRegion(region, res) {
 }
 
 /**
+ * GET /api/v1/prices/latest/all
+ * Most recent price row for every region the customer has access to,
+ * returned in a single request as a map keyed by region_code.
+ * Counts as 1 API call regardless of how many regions are returned.
+ */
+router.get('/latest/all', async (req, res) => {
+  const start = Date.now();
+  const allowedRegions = req.customer.allowed_regions || [];
+
+  if (!allowedRegions.length) {
+    return res.json({ success: true, data: {}, meta: { count: 0, query_ms: 0 } });
+  }
+
+  try {
+    // DISTINCT ON guarantees one row per region — the most recent by timestamp
+    const placeholders = allowedRegions.map((_, i) => `$${i + 1}`).join(', ');
+    const { rows } = await query(
+      `SELECT DISTINCT ON (region_code)
+         region_code, timestamp, price_per_mwh, price_day_ahead_mwh,
+         price_type, demand_mw, net_generation_mw, interchange_mw, source
+       FROM energy_prices
+       WHERE region_code IN (${placeholders})
+         AND price_type = 'real_time_hourly'
+       ORDER BY region_code, timestamp DESC`,
+      allowedRegions
+    );
+
+    // Shape into a map: { CAISO: {...}, ERCOT: {...}, ... }
+    const dataMap = {};
+    for (const row of rows) {
+      dataMap[row.region_code] = row;
+    }
+
+    res.locals.responseRows = rows.length;
+    res.json({
+      success: true,
+      data: dataMap,
+      meta: { count: rows.length, regions: allowedRegions, query_ms: Date.now() - start }
+    });
+  } catch (err) {
+    res.locals.errorMessage = err.message;
+    res.status(500).json({ success: false, error: 'Failed to fetch price data', code: 'DB_ERROR' });
+  }
+});
+
+/**
  * GET /api/v1/prices/latest?region=CAISO&type=real_time_hourly
  * Most recent price row for a region.
  */

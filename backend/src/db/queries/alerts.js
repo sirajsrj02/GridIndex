@@ -185,6 +185,60 @@ async function getAlertHistory(alertId, customerId, limit = 50) {
   return rows;
 }
 
+/**
+ * Get all trigger history across ALL of a customer's alerts (most recent first).
+ * Joins alert_history with price_alerts to include alert name, type, and region.
+ * Ownership is enforced via the JOIN — no cross-customer data leakage possible.
+ *
+ * @param {number}  customerId
+ * @param {number}  limit      — max rows to return
+ * @param {object}  [filters]
+ * @param {string}  [filters.region]  — filter to a specific region code
+ * @param {number}  [filters.days]    — only include events from the last N days
+ */
+async function getAllCustomerAlertHistory(customerId, limit = 100, filters = {}) {
+  const conditions = ['a.customer_id = $1'];
+  const values     = [customerId];
+  let   idx        = 2;
+
+  if (filters.region) {
+    conditions.push(`h.region_code = $${idx++}`);
+    values.push(filters.region);
+  }
+  if (filters.days && Number.isFinite(filters.days) && filters.days > 0) {
+    conditions.push(`h.triggered_at >= NOW() - ($${idx++} || ' days')::interval`);
+    values.push(filters.days);
+  }
+
+  values.push(limit);
+
+  const { rows } = await query(
+    `SELECT
+       h.id,
+       h.alert_id,
+       h.triggered_at,
+       h.alert_type,
+       h.region_code,
+       h.price_at_trigger,
+       h.carbon_at_trigger,
+       h.renewable_pct_at_trigger,
+       h.pct_change,
+       h.threshold_that_triggered,
+       h.delivery_method,
+       h.delivered,
+       h.delivered_at,
+       h.delivery_error,
+       a.alert_name
+     FROM alert_history h
+     JOIN price_alerts  a ON a.id = h.alert_id
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY h.triggered_at DESC
+     LIMIT $${idx}`,
+    values
+  );
+  return rows;
+}
+
 module.exports = {
   createAlert,
   listAlerts,
@@ -194,5 +248,6 @@ module.exports = {
   getActiveAlertsForRegion,
   markAlertTriggered,
   recordAlertHistory,
-  getAlertHistory
+  getAlertHistory,
+  getAllCustomerAlertHistory
 };

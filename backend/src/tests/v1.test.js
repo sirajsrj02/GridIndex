@@ -17,10 +17,23 @@ jest.mock('../db/queries/customers', () => ({
   getCustomerByApiKey: jest.fn(),
   getCustomerById: jest.fn(),
   incrementUsage: jest.fn().mockResolvedValue(undefined),
+  checkAndMarkUsageWarning: jest.fn().mockResolvedValue(false), // default: already sent
   createCustomer: jest.fn(),
   getCustomerByEmail: jest.fn(),
   rotateApiKey: jest.fn(),
-  resetMonthlyUsage: jest.fn()
+  resetMonthlyUsage: jest.fn(),
+  createPasswordResetToken: jest.fn(),
+  getValidResetToken: jest.fn(),
+  consumeResetToken: jest.fn()
+}));
+
+// Mock email service — prevents real SMTP calls in tests
+jest.mock('../services/emailService', () => ({
+  sendWelcomeEmail:      jest.fn().mockResolvedValue(null),
+  sendAlertEmail:        jest.fn().mockResolvedValue(null),
+  sendPasswordResetEmail: jest.fn().mockResolvedValue(null),
+  sendUsageWarningEmail: jest.fn().mockResolvedValue(null),
+  verifyTransport:       jest.fn().mockResolvedValue(undefined)
 }));
 
 // Mock usage logging — usageLogger fires logUsage on response finish
@@ -33,7 +46,8 @@ jest.mock('../db/queries/usage', () => ({
 const request = require('supertest');
 const app = require('../../server');
 const { query } = require('../config/database');
-const { getCustomerByApiKey } = require('../db/queries/customers');
+const { getCustomerByApiKey, checkAndMarkUsageWarning } = require('../db/queries/customers');
+const { sendUsageWarningEmail } = require('../services/emailService');
 
 // ─── Shared test fixtures ────────────────────────────────────────────────────
 
@@ -175,6 +189,73 @@ describe('API key authentication', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  Rate-limit response headers
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('X-RateLimit-* response headers', () => {
+  it('sets all three headers on a successful authenticated request', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    const res = await request(app).get('/api/v1/regions').set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.headers['x-ratelimit-limit']).toBe(String(mockCustomer.monthly_limit));
+    // remaining = limit - (calls_this_month + 1) because we count the current call
+    expect(res.headers['x-ratelimit-remaining']).toBe(
+      String(mockCustomer.monthly_limit - mockCustomer.calls_this_month - 1)
+    );
+    expect(res.headers['x-ratelimit-reset']).toBeDefined();
+    // Reset must be a future Unix timestamp (seconds)
+    expect(Number(res.headers['x-ratelimit-reset'])).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it('sets headers with remaining=0 on a 429 response', async () => {
+    getCustomerByApiKey.mockResolvedValue({
+      ...mockCustomer,
+      calls_this_month: 10000,
+      monthly_limit:    10000
+    });
+
+    const res = await request(app).get('/api/v1/regions').set(auth());
+
+    expect(res.status).toBe(429);
+    expect(res.headers['x-ratelimit-limit']).toBe('10000');
+    expect(res.headers['x-ratelimit-remaining']).toBe('0');
+    expect(res.headers['x-ratelimit-reset']).toBeDefined();
+  });
+
+  it('remaining never goes below 0 when calls_this_month exceeds limit', async () => {
+    // Edge case: DB data anomaly where used > limit
+    getCustomerByApiKey.mockResolvedValue({
+      ...mockCustomer,
+      calls_this_month: 500,
+      monthly_limit:    100  // overage — shouldn't produce negative remaining
+    });
+
+    const res = await request(app).get('/api/v1/regions').set(auth());
+
+    // Should be 429 (limit exceeded), remaining clamped to 0
+    expect(res.status).toBe(429);
+    expect(res.headers['x-ratelimit-remaining']).toBe('0');
+  });
+
+  it('X-RateLimit-Reset is the Unix timestamp for the 1st of next month', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    const res = await request(app).get('/api/v1/regions').set(auth());
+
+    const resetTs  = Number(res.headers['x-ratelimit-reset']);
+    const resetDate = new Date(resetTs * 1000);
+
+    // Must be the 1st of a month at midnight UTC
+    expect(resetDate.getUTCDate()).toBe(1);
+    expect(resetDate.getUTCHours()).toBe(0);
+    expect(resetDate.getUTCMinutes()).toBe(0);
+    expect(resetDate.getUTCSeconds()).toBe(0);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  GET /api/v1/regions
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -210,6 +291,84 @@ describe('GET /api/v1/regions', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 //  GET /api/v1/prices
 // ══════════════════════════════════════════════════════════════════════════════
+
+describe('GET /api/v1/prices/latest/all', () => {
+  const makePriceRow = (region) => ({
+    region_code: region,
+    timestamp: new Date().toISOString(),
+    price_per_mwh: 42.0 + Math.random(),
+    price_day_ahead_mwh: 40.0,
+    price_type: 'real_time_hourly',
+    demand_mw: 20000,
+    net_generation_mw: 19000,
+    interchange_mw: -1000,
+    source: 'EIA'
+  });
+
+  it('returns a map keyed by region_code for all allowed regions', async () => {
+    const rows = ['CAISO', 'ERCOT', 'PJM'].map(makePriceRow);
+    query.mockResolvedValue({ rows });
+
+    getCustomerByApiKey.mockResolvedValue({
+      ...mockCustomer,
+      allowed_regions: ['CAISO', 'ERCOT', 'PJM']
+    });
+
+    const res = await request(app)
+      .get('/api/v1/prices/latest/all')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    // Response must be a map, not an array
+    expect(Array.isArray(res.body.data)).toBe(false);
+    expect(typeof res.body.data).toBe('object');
+    expect(res.body.data.CAISO).toBeDefined();
+    expect(res.body.data.ERCOT).toBeDefined();
+    expect(res.body.data.PJM).toBeDefined();
+    expect(res.body.data.CAISO.region_code).toBe('CAISO');
+    expect(res.body.meta.count).toBe(3);
+  });
+
+  it('returns 200 with empty data map when customer has no allowed regions', async () => {
+    getCustomerByApiKey.mockResolvedValue({
+      ...mockCustomer,
+      allowed_regions: []
+    });
+
+    const res = await request(app)
+      .get('/api/v1/prices/latest/all')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({});
+    expect(res.body.meta.count).toBe(0);
+  });
+
+  it('returns 401 without an API key', async () => {
+    const res = await request(app).get('/api/v1/prices/latest/all');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 200 with partial map when some regions have no data in DB', async () => {
+    // Only CAISO has a row — ERCOT has no data yet
+    query.mockResolvedValue({ rows: [makePriceRow('CAISO')] });
+
+    getCustomerByApiKey.mockResolvedValue({
+      ...mockCustomer,
+      allowed_regions: ['CAISO', 'ERCOT']
+    });
+
+    const res = await request(app)
+      .get('/api/v1/prices/latest/all')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.CAISO).toBeDefined();
+    expect(res.body.data.ERCOT).toBeUndefined();
+    expect(res.body.meta.count).toBe(1);
+  });
+});
 
 describe('GET /api/v1/prices/latest', () => {
   const priceRow = {
@@ -718,5 +877,88 @@ describe('Unknown /api/v1/* routes', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.code).toBe('NOT_FOUND');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Usage warning emails
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('Usage warning emails', () => {
+  function customerAt(pct, warningSentLevel = 0) {
+    const limit = 1000;
+    // calls_this_month is pre-increment; the middleware adds 1 before checking
+    const calls = Math.floor(limit * pct / 100) - 1;
+    return {
+      ...mockCustomer,
+      monthly_limit: limit,
+      calls_this_month: calls,
+      usage_warning_sent: warningSentLevel
+    };
+  }
+
+  beforeEach(() => {
+    query.mockResolvedValue({ rows: [] });
+  });
+
+  it('sends 80% warning when usage crosses 80% for the first time', async () => {
+    // pre-increment count = 799 → post-increment = 800 = exactly 80%
+    getCustomerByApiKey.mockResolvedValue(customerAt(80, 0));
+    checkAndMarkUsageWarning.mockResolvedValue(true); // first time — mark succeeds
+
+    await request(app).get('/api/v1/regions').set(auth());
+    // Allow fire-and-forget promise to resolve
+    await new Promise((r) => setImmediate(r));
+
+    expect(checkAndMarkUsageWarning).toHaveBeenCalledWith(mockCustomer.id, 80);
+    expect(sendUsageWarningEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ level: 80 })
+    );
+  });
+
+  it('sends 95% warning when usage crosses 95% for the first time', async () => {
+    getCustomerByApiKey.mockResolvedValue(customerAt(95, 80)); // 80% already sent
+    checkAndMarkUsageWarning.mockResolvedValue(true);
+
+    await request(app).get('/api/v1/regions').set(auth());
+    await new Promise((r) => setImmediate(r));
+
+    expect(checkAndMarkUsageWarning).toHaveBeenCalledWith(mockCustomer.id, 95);
+    expect(sendUsageWarningEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ level: 95 })
+    );
+  });
+
+  it('does NOT send email if warning for that level was already sent', async () => {
+    // 80% warning already sent (usage_warning_sent = 80), usage still at 80%
+    getCustomerByApiKey.mockResolvedValue(customerAt(80, 80));
+
+    await request(app).get('/api/v1/regions').set(auth());
+    await new Promise((r) => setImmediate(r));
+
+    // Fast-path skip: usage_warning_sent >= level, so no DB call or email
+    expect(checkAndMarkUsageWarning).not.toHaveBeenCalled();
+    expect(sendUsageWarningEmail).not.toHaveBeenCalled();
+  });
+
+  it('does NOT send email when usage is below 80%', async () => {
+    getCustomerByApiKey.mockResolvedValue(customerAt(50, 0));
+
+    await request(app).get('/api/v1/regions').set(auth());
+    await new Promise((r) => setImmediate(r));
+
+    expect(checkAndMarkUsageWarning).not.toHaveBeenCalled();
+    expect(sendUsageWarningEmail).not.toHaveBeenCalled();
+  });
+
+  it('does NOT send email when another concurrent request already marked the level', async () => {
+    getCustomerByApiKey.mockResolvedValue(customerAt(80, 0));
+    checkAndMarkUsageWarning.mockResolvedValue(false); // concurrent request won the race
+
+    await request(app).get('/api/v1/regions').set(auth());
+    await new Promise((r) => setImmediate(r));
+
+    expect(checkAndMarkUsageWarning).toHaveBeenCalledWith(mockCustomer.id, 80);
+    expect(sendUsageWarningEmail).not.toHaveBeenCalled();
   });
 });

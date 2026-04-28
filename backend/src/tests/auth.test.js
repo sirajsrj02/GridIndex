@@ -15,6 +15,15 @@ jest.mock('../config/database', () => ({
 // Mock all customer queries — auth routes use these directly
 jest.mock('../db/queries/customers');
 
+// Mock email service so no real SMTP calls are made in tests
+jest.mock('../services/emailService', () => ({
+  sendWelcomeEmail:       jest.fn().mockResolvedValue(null),
+  sendVerificationEmail:  jest.fn().mockResolvedValue(null),
+  sendPasswordResetEmail: jest.fn().mockResolvedValue(null),
+  sendAlertEmail:         jest.fn().mockResolvedValue(null),
+  verifyTransport:        jest.fn().mockResolvedValue(true),
+}));
+
 // Mock usage logging — usageLogger calls this on response finish
 jest.mock('../db/queries/usage', () => ({
   logUsage: jest.fn().mockResolvedValue(undefined),
@@ -32,8 +41,16 @@ const {
   createCustomer,
   getCustomerByEmail,
   getCustomerById,
-  rotateApiKey
+  rotateApiKey,
+  createEmailVerifyToken,
+  getCustomerByVerifyToken,
+  markEmailVerified,
+  createPasswordResetToken,
+  getValidResetToken,
+  consumeResetToken
 } = require('../db/queries/customers');
+
+const { sendPasswordResetEmail, sendVerificationEmail } = require('../services/emailService');
 
 const { getUsageSummary, getTopEndpoints } = require('../db/queries/usage');
 
@@ -64,10 +81,12 @@ const mockCustomer = {
   allowed_regions: ['CAISO', 'ERCOT', 'PJM', 'MISO', 'NYISO', 'ISONE', 'SPP', 'WECC'],
   last_seen_at: new Date(),
   created_at: new Date(),
+  is_email_verified: false,
   // Sensitive tokens — must never appear in API responses
-  email_verify_token: 'secret-verify-token',
-  password_reset_token: 'secret-reset-token',
-  password_reset_expires: new Date()
+  email_verify_token:      'secret-verify-token',
+  email_verify_expires_at: new Date(Date.now() + 86400000), // 24 h from now
+  password_reset_token:    'secret-reset-token',
+  password_reset_expires:  new Date()
 };
 
 function makeJwt(id = mockCustomer.id) {
@@ -86,6 +105,7 @@ describe('POST /api/auth/register', () => {
   it('creates an account and returns token + api_key', async () => {
     getCustomerByEmail.mockResolvedValue(null);   // email not taken
     createCustomer.mockResolvedValue(mockCustomer);
+    createEmailVerifyToken.mockResolvedValue();
 
     const res = await request(app)
       .post('/api/auth/register')
@@ -101,6 +121,7 @@ describe('POST /api/auth/register', () => {
   it('strips all sensitive fields from the customer response', async () => {
     getCustomerByEmail.mockResolvedValue(null);
     createCustomer.mockResolvedValue(mockCustomer);
+    createEmailVerifyToken.mockResolvedValue();
 
     const res = await request(app)
       .post('/api/auth/register')
@@ -109,6 +130,7 @@ describe('POST /api/auth/register', () => {
     const c = res.body.data.customer;
     expect(c.password_hash).toBeUndefined();
     expect(c.email_verify_token).toBeUndefined();
+    expect(c.email_verify_expires_at).toBeUndefined();
     expect(c.password_reset_token).toBeUndefined();
     expect(c.password_reset_expires).toBeUndefined();
   });
@@ -396,6 +418,190 @@ describe('GET /api/dashboard/profile', () => {
 
   it('returns 401 without a token', async () => {
     const res = await request(app).get('/api/dashboard/profile');
+    expect(res.status).toBe(401);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  POST /api/auth/forgot-password
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('POST /api/auth/forgot-password', () => {
+  it('returns 200 for a known email and queues a reset email', async () => {
+    getCustomerByEmail.mockResolvedValue(mockCustomer);
+    createPasswordResetToken.mockResolvedValue({ id: 1 });
+
+    const res = await request(app)
+      .post('/api/auth/forgot-password')
+      .send({ email: 'test@example.com' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.message).toMatch(/reset link/i);
+  });
+
+  it('returns 200 for an unknown email — no enumeration', async () => {
+    getCustomerByEmail.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/auth/forgot-password')
+      .send({ email: 'nobody@example.com' });
+
+    // Must still be 200 — never reveal whether the email exists
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it('returns 400 when email field is missing', async () => {
+    const res = await request(app)
+      .post('/api/auth/forgot-password')
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('MISSING_FIELDS');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  POST /api/auth/reset-password
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('POST /api/auth/reset-password', () => {
+  it('updates the password with a valid token', async () => {
+    getValidResetToken.mockResolvedValue({ id: 99, customer_id: mockCustomer.id });
+    consumeResetToken.mockResolvedValue();
+
+    const res = await request(app)
+      .post('/api/auth/reset-password')
+      .send({ token: 'validrawtoken', new_password: 'NewPassword1!' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.message).toMatch(/updated/i);
+    expect(consumeResetToken).toHaveBeenCalledWith(99, mockCustomer.id, expect.any(String));
+  });
+
+  it('returns 400 for an invalid or expired token', async () => {
+    getValidResetToken.mockResolvedValue(null); // no matching valid token
+
+    const res = await request(app)
+      .post('/api/auth/reset-password')
+      .send({ token: 'expiredtoken', new_password: 'NewPassword1!' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_RESET_TOKEN');
+  });
+
+  it('returns 400 when new_password is too short', async () => {
+    const res = await request(app)
+      .post('/api/auth/reset-password')
+      .send({ token: 'sometoken', new_password: 'short' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('WEAK_PASSWORD');
+  });
+
+  it('returns 400 when token is missing', async () => {
+    const res = await request(app)
+      .post('/api/auth/reset-password')
+      .send({ new_password: 'NewPassword1!' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('MISSING_FIELDS');
+  });
+
+  it('returns 400 when new_password is missing', async () => {
+    const res = await request(app)
+      .post('/api/auth/reset-password')
+      .send({ token: 'sometoken' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('MISSING_FIELDS');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  POST /api/auth/verify-email
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('POST /api/auth/verify-email', () => {
+  it('marks email as verified with a valid token', async () => {
+    getCustomerByVerifyToken.mockResolvedValue(mockCustomer);
+    markEmailVerified.mockResolvedValue();
+
+    const res = await request(app)
+      .post('/api/auth/verify-email')
+      .send({ token: 'validrawtoken' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.message).toMatch(/verified/i);
+    expect(markEmailVerified).toHaveBeenCalledWith(mockCustomer.id);
+  });
+
+  it('returns 400 for an invalid or expired token', async () => {
+    getCustomerByVerifyToken.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/auth/verify-email')
+      .send({ token: 'expiredtoken' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_VERIFY_TOKEN');
+    expect(markEmailVerified).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when token field is missing', async () => {
+    const res = await request(app)
+      .post('/api/auth/verify-email')
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('MISSING_FIELDS');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  POST /api/auth/resend-verification
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('POST /api/auth/resend-verification', () => {
+  it('sends a new verification email for an unverified account', async () => {
+    getCustomerById.mockResolvedValue({ ...mockCustomer, is_email_verified: false });
+    createEmailVerifyToken.mockResolvedValue();
+    sendVerificationEmail.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/auth/resend-verification')
+      .set('Authorization', `Bearer ${makeJwt()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.message).toMatch(/sent/i);
+
+    // Let the fire-and-forget tasks complete
+    await new Promise((r) => setImmediate(r));
+
+    expect(createEmailVerifyToken).toHaveBeenCalledWith(mockCustomer.id, expect.any(String));
+    expect(sendVerificationEmail).toHaveBeenCalledWith(expect.objectContaining({
+      email:     mockCustomer.email,
+      verifyUrl: expect.stringContaining('/verify-email?token=')
+    }));
+  });
+
+  it('returns 400 when email is already verified', async () => {
+    getCustomerById.mockResolvedValue({ ...mockCustomer, is_email_verified: true });
+
+    const res = await request(app)
+      .post('/api/auth/resend-verification')
+      .set('Authorization', `Bearer ${makeJwt()}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('ALREADY_VERIFIED');
+  });
+
+  it('returns 401 without a JWT', async () => {
+    const res = await request(app).post('/api/auth/resend-verification');
     expect(res.status).toBe(401);
   });
 });

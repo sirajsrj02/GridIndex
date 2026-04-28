@@ -131,4 +131,40 @@ async function sendAlertWebhook(alertRow, triggerData) {
   });
 }
 
-module.exports = { sendAlertWebhook, deliver, buildPayload, sign };
+/**
+ * Fire a single test delivery — no retries, no alert_history record.
+ * Used by the "Test webhook" route so customers get instant feedback.
+ *
+ * @returns {{ delivered: boolean, statusCode: number|null, error: string|null }}
+ */
+async function testWebhookDelivery({ webhookUrl, webhookSecret, payload }) {
+  const body    = JSON.stringify(payload);
+  const sig     = sign(webhookSecret, body);
+  const headers = {
+    'Content-Type':      'application/json',
+    'User-Agent':        'GridIndex-Webhook/1.0',
+    'X-GridIndex-Event': payload.event || 'alert.test'
+  };
+  if (sig) headers['X-GridIndex-Signature'] = sig;
+
+  try {
+    const response = await axios.post(webhookUrl, body, {
+      headers,
+      timeout: WEBHOOK_TIMEOUT_MS,
+      validateStatus: () => true   // never throw on non-2xx
+    });
+
+    const delivered = response.status >= 200 && response.status < 300;
+    logger.info('Webhook test delivery', { url: webhookUrl, status: response.status, delivered });
+    return {
+      delivered,
+      statusCode: response.status,
+      error:      delivered ? null : `HTTP ${response.status}`
+    };
+  } catch (err) {
+    logger.warn('Webhook test delivery failed', { url: webhookUrl, error: err.message });
+    return { delivered: false, statusCode: null, error: err.message };
+  }
+}
+
+module.exports = { sendAlertWebhook, deliver, buildPayload, sign, testWebhookDelivery };

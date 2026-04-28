@@ -17,6 +17,13 @@ if (!EIA_KEY) throw new Error('EIA_API_KEY environment variable is required');
 // SE (Southeast/SERC), TEN (TVA), FLA (FRCC), CAR (Carolinas/SERC) are
 // intentionally excluded — they do NOT map to PJM or ISONE and storing them
 // there would corrupt demand figures for those regions.
+//
+// NOTE: SPP (Southwest Power Pool) demand and fuel-mix data is available via
+// EIA respondent code 'CENT' (Central region). However, SPP real-time LMP
+// prices are NOT available through the EIA API — they require SPP's own
+// Integrated Marketplace API (https://marketplace.spp.org/). The 'CENT'→'SPP'
+// mapping here captures demand and generation data; price data remains null
+// until SPP Marketplace integration is added.
 const EIA_REGION_MAP = {
   'CAL':  'CAISO',
   'TEX':  'ERCOT',
@@ -24,7 +31,8 @@ const EIA_REGION_MAP = {
   'MIDW': 'MISO',
   'NY':   'NYISO',
   'NE':   'ISONE',
-  'SW':   'WECC'   // Southwest (AZ, NV, NM) is within WECC territory
+  'SW':   'WECC',  // Southwest (AZ, NV, NM) is within WECC territory
+  'CENT': 'SPP'    // Central (KS, OK, NE, SD, ND, parts of TX/NM) = SPP territory
 };
 
 // US states → closest ISO/region for retail price context
@@ -33,7 +41,9 @@ const STATE_TO_REGION = {
   NY: 'NYISO', CT: 'ISONE', MA: 'ISONE', ME: 'ISONE', NH: 'ISONE', RI: 'ISONE', VT: 'ISONE',
   PA: 'PJM', NJ: 'PJM', MD: 'PJM', VA: 'PJM', WV: 'PJM', OH: 'PJM', IN: 'PJM',
   IL: 'MISO', MI: 'MISO', MN: 'MISO', WI: 'MISO', MO: 'MISO', IA: 'MISO',
-  AZ: 'WECC', CO: 'WECC', NV: 'WECC', OR: 'WECC', WA: 'WECC', UT: 'WECC'
+  AZ: 'WECC', CO: 'WECC', NV: 'WECC', OR: 'WECC', WA: 'WECC', UT: 'WECC',
+  // SPP core footprint states
+  KS: 'SPP', OK: 'SPP', NE: 'SPP', SD: 'SPP', ND: 'SPP'
 };
 
 // EIA fuel type codes → our unified labels
@@ -109,6 +119,7 @@ async function pollHourlyDemand() {
  * Fetch hourly generation by fuel type for all EIA regions.
  */
 async function pollFuelMix() {
+  const start = Date.now();
   logger.info('Polling EIA fuel type generation');
   await sleep(600);
 
@@ -155,7 +166,11 @@ async function pollFuelMix() {
       }
     }
 
-    logger.info(`EIA fuel mix: upserted ${fuelCount} fuel rows, ${carbonCount} carbon rows`);
+    const elapsed = Date.now() - start;
+    try { await markHealthSuccess('EIA_API', elapsed); } catch (e) {
+      logger.warn('Could not update EIA_API health', { error: e.message });
+    }
+    logger.info(`EIA fuel mix: upserted ${fuelCount} fuel rows, ${carbonCount} carbon rows (${elapsed}ms)`);
     return { fuelCount, carbonCount };
 
   } catch (err) {
@@ -239,4 +254,4 @@ if (require.main === module) {
     .catch((err) => { console.error('Fatal:', err.message); process.exit(1); });
 }
 
-module.exports = { run, pollHourlyDemand, pollFuelMix, pollRetailPrices };
+module.exports = { run, pollHourlyDemand, pollFuelMix, pollRetailPrices, EIA_REGION_MAP, STATE_TO_REGION };

@@ -62,7 +62,7 @@ const clients = {
   }),
 
   caiso: createHttpClient({
-    baseURL: 'http://www.caiso.com',
+    baseURL: 'https://www.caiso.com',
     timeout: 15000,
     retries: 3,
     retryDelay: 2000
