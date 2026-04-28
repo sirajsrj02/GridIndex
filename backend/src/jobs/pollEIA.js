@@ -6,7 +6,7 @@ const logger = require('../config/logger').forJob('pollEIA');
 const { clients, sleep } = require('../utils/httpClient');
 const { parseEIAPeriod, eiaParams } = require('../utils/eiaHelpers');
 const { normalizeEnergyPrice, normalizeFuelMix, normalizeCarbonIntensity } = require('../services/priceNormalizer');
-const { upsertManyEnergyPrices, upsertFuelMix, upsertCarbonIntensity } = require('../db/queries/prices');
+const { upsertManyEnergyPrices, upsertFuelMix, upsertCarbonIntensity, upsertNaturalGasPrice } = require('../db/queries/prices');
 const { markHealthSuccess, markHealthFailure } = require('../db/queries/health');
 
 const EIA_KEY = process.env.EIA_API_KEY;
@@ -236,14 +236,101 @@ async function pollRetailPrices() {
   }
 }
 
+/**
+ * Fetch monthly natural gas spot prices from EIA.
+ * Targets the Henry Hub spot price and any other hubs returned by the
+ * /natural-gas/pri/sum endpoint with process code PRS (spot price).
+ *
+ * EIA units for this endpoint are $/MCF (thousand cubic feet).
+ * Conversion: 1 MCF ≈ 1.037 MMBtu for pipeline-quality natural gas.
+ *
+ * Henry Hub is the US benchmark — it's what gas peakers are priced against
+ * and is a key input for electricity price forecasting.
+ */
+async function pollNaturalGasPrices() {
+  const start = Date.now();
+  logger.info('Polling EIA natural gas prices');
+  await sleep(600);
+
+  try {
+    const qs = eiaParams({
+      api_key:            EIA_KEY,
+      frequency:          'monthly',
+      'data[]':           ['value'],
+      'facets[process][]': ['PRS'],   // spot price process code
+      'sort[0][column]':  'period',
+      'sort[0][direction]': 'desc',
+      offset: 0,
+      length: 50
+    });
+    const response = await clients.eia.get(`/natural-gas/pri/sum/data/?${qs}`);
+    const records  = response.data?.response?.data || [];
+    logger.info(`EIA natural gas: received ${records.length} records`);
+
+    let count = 0;
+    for (const rec of records) {
+      const rawValue = parseFloat(rec.value);
+      if (isNaN(rawValue) || rawValue <= 0) continue;
+
+      const ts = parseEIAPeriod(rec.period);
+      if (!ts) continue;
+
+      // Determine units from the record — EIA v2 returns a `units` field
+      const units = (rec.units || '').toLowerCase();
+      let pricePerMcf   = null;
+      let pricePerMmbtu = null;
+
+      if (units.includes('mcf') || units.includes('thousand cubic feet')) {
+        pricePerMcf   = rawValue;
+        pricePerMmbtu = rawValue / 1.037;  // 1 MCF ≈ 1.037 MMBtu
+      } else if (units.includes('mmbtu') || units.includes('million btu')) {
+        pricePerMmbtu = rawValue;
+        pricePerMcf   = rawValue * 1.037;
+      } else {
+        // Default assumption for this EIA endpoint: $/MCF
+        pricePerMcf   = rawValue;
+        pricePerMmbtu = rawValue / 1.037;
+      }
+
+      // Use the human-readable series description as hub name; fall back to series ID
+      const hubName = (rec['series-description'] || rec['seriesDescription'] || rec.series || 'Unknown Hub').trim();
+
+      await upsertNaturalGasPrice({
+        hubName,
+        regionCode:   null,   // natural gas hubs don't map 1:1 to electricity ISOs
+        timestamp:    ts,
+        pricePerMmbtu,
+        pricePerMcf,
+        priceType:    'spot',
+        source:       'EIA'
+      });
+      count++;
+    }
+
+    const elapsed = Date.now() - start;
+    try { await markHealthSuccess('EIA_API', elapsed); } catch (e) {
+      logger.warn('Could not update EIA_API health', { error: e.message });
+    }
+    logger.info(`EIA natural gas: upserted ${count} rows (${elapsed}ms)`);
+    return count;
+
+  } catch (err) {
+    // Natural gas is supplementary — log a warning but don't mark EIA as failing
+    logger.warn('EIA natural gas poll failed (non-critical)', { error: err.message });
+    return 0;
+  }
+}
+
 async function run() {
   logger.info('=== EIA poll starting ===');
   const results = {};
-  try { results.demand = await pollHourlyDemand(); } catch (e) { results.demandError = e.message; }
+  try { results.demand     = await pollHourlyDemand(); }    catch (e) { results.demandError    = e.message; }
   await sleep(600);
-  try { results.fuelMix = await pollFuelMix(); } catch (e) { results.fuelMixError = e.message; }
+  try { results.fuelMix    = await pollFuelMix(); }         catch (e) { results.fuelMixError   = e.message; }
   await sleep(600);
-  results.retail = await pollRetailPrices();
+  results.retail           = await pollRetailPrices();
+  await sleep(600);
+  results.naturalGas       = await pollNaturalGasPrices();  // non-critical; swallows its own errors
   logger.info('=== EIA poll complete ===', results);
   return results;
 }
@@ -254,4 +341,4 @@ if (require.main === module) {
     .catch((err) => { console.error('Fatal:', err.message); process.exit(1); });
 }
 
-module.exports = { run, pollHourlyDemand, pollFuelMix, pollRetailPrices, EIA_REGION_MAP, STATE_TO_REGION };
+module.exports = { run, pollHourlyDemand, pollFuelMix, pollRetailPrices, pollNaturalGasPrices, EIA_REGION_MAP, STATE_TO_REGION };

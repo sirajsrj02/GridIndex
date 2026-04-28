@@ -466,6 +466,115 @@ const { data } = await res.json();`;
         />
       </Section>
 
+      {/* ── Demand ─────────────────────────────────────────────────────────────── */}
+      <Section title="Demand" description="Hourly electricity demand (load) by grid region in MW, sourced from EIA.">
+        <Endpoint
+          method="GET"
+          path="/demand/latest"
+          title="Latest demand (single region)"
+          description="Returns the most recent hourly demand reading for one region."
+          params={[
+            { name: 'region', type: 'string', required: true, description: 'ISO region code (CAISO, ERCOT, PJM, MISO, NYISO, ISONE, SPP, WECC)' },
+          ]}
+          curl={curl('GET', '/demand/latest?region=CAISO')}
+          js={js('GET', '/demand/latest?region=CAISO')}
+          response={`{
+  "success": true,
+  "data": {
+    "region_code": "CAISO",
+    "timestamp": "2026-04-28T14:00:00Z",
+    "demand_mw": 27843.5,
+    "demand_forecast_mw": 28100.0,
+    "net_generation_mw": 26910.2,
+    "interchange_mw": 933.3,
+    "source": "EIA"
+  },
+  "meta": { "query_ms": 4 }
+}`}
+        />
+
+        <Endpoint
+          method="GET"
+          path="/demand/latest/all"
+          title="Latest demand (all regions)"
+          description="One demand reading per accessible region in a single call."
+          curl={curl('GET', '/demand/latest/all')}
+          js={js('GET', '/demand/latest/all')}
+          response={`{
+  "success": true,
+  "count": 8,
+  "data": [
+    { "region_code": "CAISO", "timestamp": "2026-04-28T14:00:00Z", "demand_mw": 27843.5 },
+    { "region_code": "ERCOT", "timestamp": "2026-04-28T14:00:00Z", "demand_mw": 52100.0 },
+    ...
+  ]
+}`}
+        />
+
+        <Endpoint
+          method="GET"
+          path="/demand"
+          title="Demand history"
+          description="Historical hourly demand series for one region."
+          params={[
+            { name: 'region', type: 'string', required: true, description: 'ISO region code' },
+            { name: 'start', type: 'ISO 8601', required: false, description: 'Start of range (e.g. 2026-04-01T00:00:00Z)' },
+            { name: 'end', type: 'ISO 8601', required: false, description: 'End of range. Defaults to now.' },
+            { name: 'limit', type: 'integer', required: false, description: 'Max rows (1–1000, default 100)' },
+          ]}
+          curl={curl('GET', '/demand?region=ERCOT&limit=48')}
+          js={js('GET', '/demand?region=ERCOT&limit=48')}
+        />
+      </Section>
+
+      {/* ── Natural Gas ─────────────────────────────────────────────────────────── */}
+      <Section
+        title="Natural Gas"
+        description="Monthly Henry Hub and regional spot prices in $/MMBtu. Gas peakers are the marginal price-setter in most US grids — when gas spikes, electricity follows."
+      >
+        <Endpoint
+          method="GET"
+          path="/natural-gas/latest"
+          title="Latest spot prices (all hubs)"
+          description="Most recent price for each hub. Filter to a specific hub with ?hub=."
+          params={[
+            { name: 'hub', type: 'string', required: false, description: 'Partial hub name match (e.g. henry+hub). Omit for all hubs.' },
+          ]}
+          curl={curl('GET', '/natural-gas/latest')}
+          js={js('GET', '/natural-gas/latest')}
+          response={`{
+  "success": true,
+  "count": 3,
+  "data": [
+    {
+      "hub_name": "Henry Hub Natural Gas Spot Price",
+      "timestamp": "2026-04-01T00:00:00Z",
+      "price_per_mmbtu": 1.89,
+      "price_per_mcf": 1.96,
+      "price_type": "spot",
+      "source": "EIA"
+    }
+  ],
+  "meta": { "note": "Monthly EIA spot prices. price_per_mmbtu is the industry-standard unit." }
+}`}
+        />
+
+        <Endpoint
+          method="GET"
+          path="/natural-gas"
+          title="Natural gas price history"
+          description="Historical monthly spot prices. Useful for charting gas–electricity price correlation."
+          params={[
+            { name: 'hub', type: 'string', required: false, description: 'Partial hub name match (e.g. henry). Omit for all hubs.' },
+            { name: 'start', type: 'ISO 8601', required: false, description: 'Start of range' },
+            { name: 'end', type: 'ISO 8601', required: false, description: 'End of range' },
+            { name: 'limit', type: 'integer', required: false, description: 'Max rows (1–500, default 100)' },
+          ]}
+          curl={curl('GET', '/natural-gas?hub=henry&limit=24')}
+          js={js('GET', '/natural-gas?hub=henry&limit=24')}
+        />
+      </Section>
+
       {/* ── Alerts ─────────────────────────────────────────────────────────────── */}
       <Section title="Alerts" description="Manage price and grid alerts — create, update, delete, and view trigger history.">
         <Endpoint

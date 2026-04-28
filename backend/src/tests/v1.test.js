@@ -962,3 +962,260 @@ describe('Usage warning emails', () => {
     expect(sendUsageWarningEmail).not.toHaveBeenCalled();
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  GET /api/v1/demand/*
+// ══════════════════════════════════════════════════════════════════════════════
+
+const mockDemandRow = {
+  region_code: 'CAISO',
+  timestamp: new Date().toISOString(),
+  demand_mw: '27843.50',
+  demand_forecast_mw: '28100.00',
+  net_generation_mw: '26910.20',
+  interchange_mw: '933.30',
+  source: 'EIA'
+};
+
+describe('GET /api/v1/demand/latest', () => {
+  it('returns the latest demand row for a valid region', async () => {
+    query.mockResolvedValue({ rows: [mockDemandRow] });
+
+    const res = await request(app)
+      .get('/api/v1/demand/latest?region=CAISO')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.region_code).toBe('CAISO');
+    expect(res.body.data.demand_mw).toBeDefined();
+    expect(res.body.meta).toBeDefined();
+  });
+
+  it('returns 400 when region param is missing', async () => {
+    const res = await request(app)
+      .get('/api/v1/demand/latest')
+      .set(auth());
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('MISSING_REGION');
+  });
+
+  it('returns 403 for a region not in the customer\'s allowed list', async () => {
+    // requireRegionAccess fires before the route handler — unknown region → 403
+    getCustomerByApiKey.mockResolvedValue({
+      ...mockCustomer,
+      allowed_regions: ['ERCOT'] // INVALID is not in any allowed list
+    });
+
+    const res = await request(app)
+      .get('/api/v1/demand/latest?region=INVALID')
+      .set(auth());
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('REGION_NOT_ALLOWED');
+  });
+
+  it('returns 403 when customer does not have access to the region', async () => {
+    getCustomerByApiKey.mockResolvedValue({
+      ...mockCustomer,
+      allowed_regions: ['ERCOT'] // no CAISO
+    });
+
+    const res = await request(app)
+      .get('/api/v1/demand/latest?region=CAISO')
+      .set(auth());
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('REGION_NOT_ALLOWED');
+  });
+
+  it('returns 404 when no demand data exists for the region yet', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    const res = await request(app)
+      .get('/api/v1/demand/latest?region=CAISO')
+      .set(auth());
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('NOT_FOUND');
+  });
+});
+
+describe('GET /api/v1/demand/latest/all', () => {
+  it('returns one row per allowed region', async () => {
+    query.mockResolvedValue({ rows: [mockDemandRow, { ...mockDemandRow, region_code: 'ERCOT' }] });
+
+    const res = await request(app)
+      .get('/api/v1/demand/latest/all')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.count).toBe(2);
+    expect(res.body.data).toHaveLength(2);
+  });
+
+  it('returns empty array when customer has no allowed regions', async () => {
+    getCustomerByApiKey.mockResolvedValue({ ...mockCustomer, allowed_regions: [] });
+
+    const res = await request(app)
+      .get('/api/v1/demand/latest/all')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(0);
+    expect(res.body.data).toHaveLength(0);
+  });
+});
+
+describe('GET /api/v1/demand (history)', () => {
+  it('returns historical demand rows for a valid region', async () => {
+    query.mockResolvedValue({ rows: [mockDemandRow, { ...mockDemandRow, timestamp: new Date(Date.now() - 3_600_000).toISOString() }] });
+
+    const res = await request(app)
+      .get('/api/v1/demand?region=CAISO&limit=24')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.meta.region).toBe('CAISO');
+    expect(res.body.meta.limit).toBe(24);
+  });
+
+  it('returns 400 for an invalid start date', async () => {
+    const res = await request(app)
+      .get('/api/v1/demand?region=CAISO&start=not-a-date')
+      .set(auth());
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_DATE');
+  });
+
+  it('clamps limit to MAX_LIMIT (1000)', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    const res = await request(app)
+      .get('/api/v1/demand?region=CAISO&limit=99999')
+      .set(auth());
+
+    // Should succeed — clamping happens silently
+    expect(res.status).toBe(200);
+    expect(res.body.meta.limit).toBe(1000);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  GET /api/v1/natural-gas/*
+// ══════════════════════════════════════════════════════════════════════════════
+
+const mockNgRow = {
+  id: 1,
+  hub_name: 'Henry Hub Natural Gas Spot Price',
+  region_code: null,
+  timestamp: new Date('2026-04-01').toISOString(),
+  price_per_mmbtu: '1.89',
+  price_per_mcf: '1.96',
+  price_type: 'spot',
+  source: 'EIA',
+  created_at: new Date().toISOString()
+};
+
+describe('GET /api/v1/natural-gas/latest', () => {
+  it('returns the latest price per hub', async () => {
+    query.mockResolvedValue({ rows: [mockNgRow] });
+
+    const res = await request(app)
+      .get('/api/v1/natural-gas/latest')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.count).toBe(1);
+    expect(res.body.data[0].hub_name).toBe('Henry Hub Natural Gas Spot Price');
+    expect(res.body.data[0].price_per_mmbtu).toBeDefined();
+    expect(res.body.meta.note).toContain('mmbtu');
+  });
+
+  it('accepts optional ?hub= filter', async () => {
+    query.mockResolvedValue({ rows: [mockNgRow] });
+
+    const res = await request(app)
+      .get('/api/v1/natural-gas/latest?hub=henry')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.meta.hub_filter).toBe('henry');
+  });
+
+  it('returns 404 when table is empty (no data polled yet)', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    const res = await request(app)
+      .get('/api/v1/natural-gas/latest')
+      .set(auth());
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('NOT_FOUND');
+  });
+
+  it('is accessible without region-level access (commodity-level data)', async () => {
+    // Customer with only one region should still reach natural gas
+    getCustomerByApiKey.mockResolvedValue({ ...mockCustomer, allowed_regions: ['ERCOT'] });
+    query.mockResolvedValue({ rows: [mockNgRow] });
+
+    const res = await request(app)
+      .get('/api/v1/natural-gas/latest')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('GET /api/v1/natural-gas (history)', () => {
+  it('returns historical natural gas rows', async () => {
+    const rows = [mockNgRow, { ...mockNgRow, timestamp: new Date('2026-03-01').toISOString(), price_per_mmbtu: '2.15' }];
+    query.mockResolvedValue({ rows });
+
+    const res = await request(app)
+      .get('/api/v1/natural-gas?limit=24')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(2);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.meta.limit).toBe(24);
+  });
+
+  it('returns 400 for an invalid end date', async () => {
+    const res = await request(app)
+      .get('/api/v1/natural-gas?end=garbage')
+      .set(auth());
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_DATE');
+  });
+
+  it('clamps limit to MAX_LIMIT (500)', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    const res = await request(app)
+      .get('/api/v1/natural-gas?limit=9999')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.meta.limit).toBe(500);
+  });
+
+  it('returns empty array (not 404) when no rows match the filter', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    const res = await request(app)
+      .get('/api/v1/natural-gas?hub=nonexistent')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(0);
+  });
+});

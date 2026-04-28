@@ -5,14 +5,16 @@ const { requireApiKey } = require('../../middleware/auth');
 const { apiRateLimiter } = require('../../middleware/rateLimit');
 const { usageLogger } = require('../../middleware/usageLogger');
 
-const regionsRouter  = require('./regions');
-const pricesRouter   = require('./prices');
-const fuelMixRouter  = require('./fuelMix');
-const carbonRouter   = require('./carbon');
-const weatherRouter  = require('./weather');
-const forecastRouter = require('./forecast');
-const healthRouter   = require('./health');
-const alertsRouter   = require('./alerts');
+const regionsRouter    = require('./regions');
+const pricesRouter     = require('./prices');
+const fuelMixRouter    = require('./fuelMix');
+const carbonRouter     = require('./carbon');
+const weatherRouter    = require('./weather');
+const forecastRouter   = require('./forecast');
+const healthRouter     = require('./health');
+const alertsRouter     = require('./alerts');
+const demandRouter     = require('./demand');
+const naturalGasRouter = require('./naturalGas');
 
 const router = Router();
 
@@ -22,13 +24,15 @@ router.use('/sources/health', healthRouter);
 // All other v1 routes require a valid API key, per-minute burst limit, + usage logging
 router.use(requireApiKey, apiRateLimiter, usageLogger);
 
-router.use('/regions',   regionsRouter);
-router.use('/prices',    pricesRouter);
-router.use('/fuel-mix',  fuelMixRouter);
-router.use('/carbon',    carbonRouter);
-router.use('/weather',   weatherRouter);
-router.use('/forecast',  forecastRouter);
-router.use('/alerts',    alertsRouter);
+router.use('/regions',     regionsRouter);
+router.use('/prices',      pricesRouter);
+router.use('/fuel-mix',    fuelMixRouter);
+router.use('/carbon',      carbonRouter);
+router.use('/weather',     weatherRouter);
+router.use('/forecast',    forecastRouter);
+router.use('/alerts',      alertsRouter);
+router.use('/demand',      demandRouter);
+router.use('/natural-gas', naturalGasRouter);
 
 // Catch-all for unknown v1 routes
 router.use((req, res) => {

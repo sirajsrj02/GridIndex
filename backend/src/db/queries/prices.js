@@ -182,10 +182,157 @@ async function getLatestPrice(regionCode, priceType = 'real_time_hourly') {
   return rows[0] || null;
 }
 
+// ── Demand queries ─────────────────────────────────────────────────────────────
+
+/**
+ * Most recent demand reading for a single region.
+ */
+async function getLatestDemand(regionCode) {
+  const { rows } = await query(
+    `SELECT region_code, timestamp, demand_mw, demand_forecast_mw,
+            net_generation_mw, interchange_mw, source
+     FROM energy_prices
+     WHERE region_code = $1 AND demand_mw IS NOT NULL
+     ORDER BY timestamp DESC LIMIT 1`,
+    [regionCode]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Latest demand for every allowed region — one row per region_code.
+ * Uses DISTINCT ON for a single DB round-trip.
+ */
+async function getLatestDemandAll(allowedRegions) {
+  if (!allowedRegions.length) return [];
+  const placeholders = allowedRegions.map((_, i) => `$${i + 1}`).join(', ');
+  const { rows } = await query(
+    `SELECT DISTINCT ON (region_code)
+       region_code, timestamp, demand_mw, demand_forecast_mw,
+       net_generation_mw, interchange_mw, source
+     FROM energy_prices
+     WHERE region_code IN (${placeholders})
+       AND demand_mw IS NOT NULL
+     ORDER BY region_code, timestamp DESC`,
+    allowedRegions
+  );
+  return rows;
+}
+
+/**
+ * Historical demand series for a region.
+ * Params: { regionCode, start, end, limit }
+ */
+async function getDemandHistory({ regionCode, start, end, limit = 100 }) {
+  const conditions = ['region_code = $1', 'demand_mw IS NOT NULL'];
+  const vals = [regionCode];
+  let idx = 2;
+
+  if (start) { conditions.push(`timestamp >= $${idx++}`); vals.push(start); }
+  if (end)   { conditions.push(`timestamp <= $${idx++}`); vals.push(end); }
+
+  vals.push(Math.min(limit, 1000));
+  const { rows } = await query(
+    `SELECT region_code, timestamp, demand_mw, demand_forecast_mw,
+            net_generation_mw, interchange_mw, source
+     FROM energy_prices
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY timestamp DESC
+     LIMIT $${idx}`,
+    vals
+  );
+  return rows;
+}
+
+// ── Natural gas queries ────────────────────────────────────────────────────────
+
+/**
+ * Upsert a single natural_gas_prices row.
+ * Conflict key: (hub_name, timestamp, price_type)
+ */
+async function upsertNaturalGasPrice({ hubName, regionCode, timestamp, pricePerMmbtu, pricePerMcf, priceType, source }) {
+  return query(
+    `INSERT INTO natural_gas_prices
+       (hub_name, region_code, timestamp, price_per_mmbtu, price_per_mcf, price_type, source)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (hub_name, timestamp, price_type)
+     DO UPDATE SET
+       price_per_mmbtu = EXCLUDED.price_per_mmbtu,
+       price_per_mcf   = EXCLUDED.price_per_mcf,
+       source          = EXCLUDED.source`,
+    [
+      hubName,
+      regionCode || null,
+      timestamp,
+      pricePerMmbtu || null,
+      pricePerMcf   || null,
+      priceType     || 'spot',
+      source        || 'EIA'
+    ]
+  );
+}
+
+/**
+ * Latest price per hub. If hubName is provided, filters to matching hubs.
+ * Returns an array (one row per distinct hub).
+ */
+async function getLatestNaturalGasPrices(hubName) {
+  if (hubName) {
+    const { rows } = await query(
+      `SELECT DISTINCT ON (hub_name) *
+       FROM natural_gas_prices
+       WHERE hub_name ILIKE $1
+       ORDER BY hub_name, timestamp DESC`,
+      [`%${hubName}%`]
+    );
+    return rows;
+  }
+  const { rows } = await query(
+    `SELECT DISTINCT ON (hub_name) *
+     FROM natural_gas_prices
+     ORDER BY hub_name, timestamp DESC`
+  );
+  return rows;
+}
+
+/**
+ * Historical natural gas price series.
+ * Params: { hubName, start, end, limit }
+ */
+async function getNaturalGasPrices({ hubName, start, end, limit = 100 }) {
+  const conditions = [];
+  const vals = [];
+  let idx = 1;
+
+  if (hubName) { conditions.push(`hub_name ILIKE $${idx++}`); vals.push(`%${hubName}%`); }
+  if (start)   { conditions.push(`timestamp >= $${idx++}`);   vals.push(start); }
+  if (end)     { conditions.push(`timestamp <= $${idx++}`);   vals.push(end); }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  vals.push(Math.min(limit, 500));
+
+  const { rows } = await query(
+    `SELECT * FROM natural_gas_prices
+     ${where}
+     ORDER BY timestamp DESC
+     LIMIT $${idx}`,
+    vals
+  );
+  return rows;
+}
+
 module.exports = {
   upsertEnergyPrice,
   upsertManyEnergyPrices,
   upsertFuelMix,
   upsertCarbonIntensity,
-  getLatestPrice
+  getLatestPrice,
+  // Demand
+  getLatestDemand,
+  getLatestDemandAll,
+  getDemandHistory,
+  // Natural gas
+  upsertNaturalGasPrice,
+  getLatestNaturalGasPrices,
+  getNaturalGasPrices,
 };
