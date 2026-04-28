@@ -1,4 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import {
+  PieChart, Pie, Cell, Tooltip as ReTooltip, Legend, ResponsiveContainer
+} from 'recharts';
 import api from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -184,6 +187,148 @@ function CurlBlock({ endpoint, apiKey }) {
           <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy</>
         )}
       </button>
+    </div>
+  );
+}
+
+// ── Fuel mix colour palette (one per source) ─────────────────────────────────
+const FUEL_COLORS = {
+  natural_gas:       '#f97316', // orange
+  coal:              '#78716c', // stone
+  nuclear:           '#8b5cf6', // violet
+  hydro:             '#0ea5e9', // sky
+  wind:              '#10b981', // emerald
+  solar:             '#facc15', // yellow
+  battery_storage:   '#6366f1', // indigo
+  petroleum:         '#ef4444', // red
+  other_renewables:  '#34d399', // green
+  other:             '#94a3b8', // slate
+};
+
+const FUEL_LABELS = {
+  natural_gas:      'Natural Gas',
+  coal:             'Coal',
+  nuclear:          'Nuclear',
+  hydro:            'Hydro',
+  wind:             'Wind',
+  solar:            'Solar',
+  battery_storage:  'Battery',
+  petroleum:        'Petroleum',
+  other_renewables: 'Other Renew.',
+  other:            'Other',
+};
+
+function buildPieSlices(row) {
+  return Object.keys(FUEL_COLORS)
+    .map((key) => ({
+      name:  FUEL_LABELS[key],
+      key,
+      value: row[`${key}_mw`] ?? 0,
+      color: FUEL_COLORS[key],
+    }))
+    .filter((s) => s.value > 0)
+    .sort((a, b) => b.value - a.value);
+}
+
+function FuelMixPieChart({ rows }) {
+  // Use the most recent row for the visual
+  const row = rows[0];
+  if (!row) return null;
+
+  const slices = buildPieSlices(row);
+  if (!slices.length) return null;
+
+  const total = row.total_generation_mw
+    ?? slices.reduce((s, x) => s + x.value, 0);
+
+  const renewablePct = row.renewable_total_pct != null
+    ? Number(row.renewable_total_pct).toFixed(1)
+    : null;
+
+  const cleanPct = row.clean_total_pct != null
+    ? Number(row.clean_total_pct).toFixed(1)
+    : null;
+
+  function CustomTooltip({ active, payload }) {
+    if (!active || !payload?.length) return null;
+    const { name, value, color } = payload[0].payload;
+    const pct = total > 0 ? ((value / total) * 100).toFixed(1) : '—';
+    return (
+      <div className="bg-white border border-gray-200 rounded-xl shadow-lg px-4 py-3 text-sm">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: color }} />
+          <span className="font-semibold text-gray-900">{name}</span>
+        </div>
+        <p className="text-gray-600">{Number(value).toLocaleString()} MW</p>
+        <p className="text-gray-400 text-xs">{pct}% of total</p>
+      </div>
+    );
+  }
+
+  function renderLegend(props) {
+    return (
+      <ul className="flex flex-wrap gap-x-4 gap-y-1.5 justify-center mt-2">
+        {props.payload.map((entry) => (
+          <li key={entry.value} className="flex items-center gap-1.5 text-xs text-gray-600">
+            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: entry.color }} />
+            {entry.value}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-700">Generation Mix</h2>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {row.region_code} · {row.timestamp ? new Date(row.timestamp).toLocaleString() : ''}
+          </p>
+        </div>
+        <div className="flex gap-4 text-right">
+          <div>
+            <p className="text-xs text-gray-400">Total</p>
+            <p className="text-sm font-semibold text-gray-800">
+              {Number(total).toLocaleString()} MW
+            </p>
+          </div>
+          {renewablePct !== null && (
+            <div>
+              <p className="text-xs text-gray-400">Renewable</p>
+              <p className="text-sm font-semibold text-green-600">{renewablePct}%</p>
+            </div>
+          )}
+          {cleanPct !== null && (
+            <div>
+              <p className="text-xs text-gray-400">Clean</p>
+              <p className="text-sm font-semibold text-blue-600">{cleanPct}%</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <ResponsiveContainer width="100%" height={300}>
+        <PieChart>
+          <Pie
+            data={slices}
+            cx="50%"
+            cy="50%"
+            innerRadius={70}
+            outerRadius={120}
+            paddingAngle={2}
+            dataKey="value"
+            nameKey="name"
+          >
+            {slices.map((s) => (
+              <Cell key={s.key} fill={s.color} stroke="white" strokeWidth={2} />
+            ))}
+          </Pie>
+          <ReTooltip content={<CustomTooltip />} />
+          <Legend content={renderLegend} />
+        </PieChart>
+      </ResponsiveContainer>
     </div>
   );
 }
@@ -395,6 +540,11 @@ export default function DataExplorer() {
             </p>
           )}
         </div>
+      )}
+
+      {/* Fuel mix donut chart — shown when fuel-mix tab is active */}
+      {ran && !loading && dataType.id === 'fuel-mix' && rows.length > 0 && (
+        <FuelMixPieChart rows={rows} />
       )}
 
       {ran && !loading && rows.length === 0 && (

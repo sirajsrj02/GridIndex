@@ -18,6 +18,7 @@ import AlertHistory  from './pages/AlertHistory';
 import Profile       from './pages/Profile';
 import Admin         from './pages/Admin';
 import ApiDocs       from './pages/ApiDocs';
+import History       from './pages/History';
 
 export default function App() {
   return (
@@ -89,6 +90,18 @@ export default function App() {
                 <ProtectedRoute>
                   <Layout>
                     <Profile />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Price History */}
+            <Route
+              path="/dashboard/history"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <History />
                   </Layout>
                 </ProtectedRoute>
               }
