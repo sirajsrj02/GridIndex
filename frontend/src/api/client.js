@@ -1,7 +1,15 @@
 import axios from 'axios';
 
+// Dev: VITE_API_BASE_URL is unset → '/api' falls through to Vite's dev proxy
+//      (proxy config in vite.config.js forwards /api → localhost:3000)
+// Prod: VITE_API_BASE_URL = https://gridindex-api.up.railway.app
+//       baseURL becomes https://gridindex-api.up.railway.app/api
+const baseURL = import.meta.env.VITE_API_BASE_URL
+  ? `${import.meta.env.VITE_API_BASE_URL}/api`
+  : '/api';
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL,
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' }
 });

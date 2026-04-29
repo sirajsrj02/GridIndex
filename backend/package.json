@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
-    "migrate": "node src/db/migrate.js"
+    "migrate": "node src/db/migrate.js",
+    "migrate:prod": "NODE_ENV=production DATABASE_SSL=true node src/db/migrate.js"
   },
   "dependencies": {
     "express": "^4.18.2",
